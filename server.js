@@ -372,7 +372,7 @@ app.get('/api/jobs/:jobId/download', (req, res) => {
 });
 
 // Serve frontend static build if available (Unified production deployment)
-const FRONTEND_DIST = path.join(__dirname, '../frontend/dist');
+const FRONTEND_DIST = path.join(__dirname, 'dist');
 if (fs.existsSync(FRONTEND_DIST)) {
   app.use(express.static(FRONTEND_DIST));
   app.get('*', (req, res, next) => {

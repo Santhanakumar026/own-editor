@@ -6,10 +6,10 @@ echo ====================================================
 echo.
 
 echo [1/2] Starting Backend Engine (FFmpeg & Node API)...
-start "VideoSync Backend Engine" cmd /k "cd /d "%~dp0" && node backend/server.js"
+start "VideoSync Backend Engine" cmd /k "cd /d "%~dp0" && node server.js"
 
 echo [2/2] Starting Frontend UI (React + Vite)...
-start "VideoSync Frontend UI" cmd /k "cd /d "%~dp0\frontend" && npm run dev -- --host 0.0.0.0 --port 3000"
+start "VideoSync Frontend UI" cmd /k "cd /d "%~dp0" && npm run dev"
 
 echo.
 echo Waiting for servers to initialize...
@@ -26,4 +26,3 @@ echo.
 echo  NOTE: Keep the terminal windows open while using.
 echo ====================================================
 pause
-
