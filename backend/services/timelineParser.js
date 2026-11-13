@@ -1,0 +1,375 @@
+const path = require('path');
+const fs = require('fs');
+
+/**
+ * Helper to convert MM:SS or MM-SS or HH:MM:SS or pure seconds string to total seconds (float).
+ */
+function toSeconds(str) {
+  if (typeof str === 'number') return str;
+  if (!str) return 0;
+  const cleaned = String(str).trim();
+  const match = cleaned.match(/^(\d{1,2})[-:](\d{2}(?:\.\d+)?)$/);
+  if (match) {
+    return parseFloat(match[1]) * 60 + parseFloat(match[2]);
+  }
+  const matchHms = cleaned.match(/^(\d{1,2})[-:](\d{2})[-:](\d{2}(?:\.\d+)?)$/);
+  if (matchHms) {
+    return (
+      parseFloat(matchHms[1]) * 3600 +
+      parseFloat(matchHms[2]) * 60 +
+      parseFloat(matchHms[3])
+    );
+  }
+  return parseFloat(cleaned);
+}
+
+/**
+ * Extracts timestamps from image filenames (e.g. "[00-21]_Create_one_16.png", "[00:03] image.png", "[00:00 - 00:03].jpg").
+ */
+function extractTimestampFromFilename(filename) {
+  if (!filename) return null;
+  const name = path.parse(filename).name.trim();
+
+  // Pattern 1: Explicit Range (TWO timestamps separated by "to" or " - " or "_to_")
+  const explicitRangeMatch = name.match(
+    /(?:\[|\()?\s*(\d{1,2}[-:]\d{2}(?:\.\d+)?|\d+(?:\.\d+)?)\s*(?:\s+-\s+|\s+to\s+|_to_)\s*(\d{1,2}[-:]\d{2}(?:\.\d+)?|\d+(?:\.\d+)?)\s*s?\s*(?:\]|\))?/i
+  );
+  if (explicitRangeMatch) {
+    const s = toSeconds(explicitRangeMatch[1]);
+    const e = toSeconds(explicitRangeMatch[2]);
+    if (!isNaN(s) && !isNaN(e) && e > s) {
+      return { type: 'range', start: Number(s.toFixed(2)), end: Number(e.toFixed(2)) };
+    }
+  }
+
+  // Pattern 2: Bracketed Windows-safe MM-SS or MM:SS clock: [00-21], [00-24], [00:03], [01-15]
+  const bracketClockMatch = name.match(
+    /(?:\[|\()\s*(\d{1,2})[-:_](\d{2}(?:\.\d+)?)\s*(?:\]|\))/
+  );
+  if (bracketClockMatch) {
+    const mins = parseFloat(bracketClockMatch[1]);
+    const secs = parseFloat(bracketClockMatch[2]);
+    if (!isNaN(mins) && !isNaN(secs)) {
+      return { type: 'point', time: Number((mins * 60 + secs).toFixed(2)) };
+    }
+  }
+
+  // Pattern 3: Bracketed pure seconds: [21s], [3.5s], [3.5], [21]
+  const bracketSecMatch = name.match(/(?:\[|\()\s*(\d+(?:\.\d+)?)\s*s?\s*(?:\]|\))/i);
+  if (bracketSecMatch) {
+    const sec = parseFloat(bracketSecMatch[1]);
+    if (!isNaN(sec)) {
+      return { type: 'point', time: Number(sec.toFixed(2)) };
+    }
+  }
+
+  // Pattern 4: Standalone clock time: "image_00:03.jpg" or "00:03_photo.png" or "00-21_scene.png"
+  const clockMatch = name.match(/(?:^|[^\d])(\d{1,2})[-:](\d{2}(?:\.\d+)?)(?:[^\d]|$)/);
+  if (clockMatch) {
+    const mins = parseFloat(clockMatch[1]);
+    const secs = parseFloat(clockMatch[2]);
+    if (!isNaN(mins) && !isNaN(secs)) {
+      return { type: 'point', time: Number((mins * 60 + secs).toFixed(2)) };
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Validates and normalizes timestamp data against uploaded files and audio duration.
+ *
+ * @param {Array<Object>} uploadedImages - Multer files array for images
+ * @param {string|Array<Object>} rawTimeline - User-provided JSON or array
+ * @param {number} audioDuration - Duration in seconds from ffprobe
+ * @param {string} projectDir - Directory where concat.txt will be saved
+ * @returns {Object} { clips, concatFilePath, warnings, summary }
+ */
+function parseAndGenerateTimeline(uploadedImages, rawTimeline, audioDuration, projectDir) {
+  if (!uploadedImages || uploadedImages.length === 0) {
+    throw new Error('No images uploaded. At least one image is required.');
+  }
+
+  let entries = [];
+  if (typeof rawTimeline === 'string') {
+    try {
+      entries = JSON.parse(rawTimeline);
+    } catch (err) {
+      entries = [];
+    }
+  } else if (Array.isArray(rawTimeline)) {
+    entries = rawTimeline;
+  }
+
+  const warnings = [];
+
+  // Build lookup maps for images:
+  const imageByIndex = [...uploadedImages];
+  const imageByName = new Map();
+
+  uploadedImages.forEach((img, idx) => {
+    imageByName.set(img.originalname, img);
+    imageByName.set(img.originalname.toLowerCase(), img);
+    const parsedBase = path.parse(img.originalname).name.toLowerCase();
+    if (!imageByName.has(parsedBase)) {
+      imageByName.set(parsedBase, img);
+    }
+  });
+
+  // If entries is empty, build entries directly from uploaded images
+  if (entries.length === 0) {
+    // Check if filenames have timestamps
+    const withTimestamps = uploadedImages
+      .map((img, idx) => ({ img, idx, parsed: extractTimestampFromFilename(img.originalname) }))
+      .filter((x) => x.parsed !== null);
+
+    if (withTimestamps.length >= Math.ceil(uploadedImages.length * 0.75)) {
+      // Sort by timestamp
+      withTimestamps.sort((a, b) => {
+        const ta = a.parsed.type === 'range' ? a.parsed.start : a.parsed.time;
+        const tb = b.parsed.type === 'range' ? b.parsed.start : b.parsed.time;
+        return ta - tb;
+      });
+
+      let cursor = 0;
+      entries = withTimestamps.map((item, i) => {
+        if (item.parsed.type === 'range') {
+          return {
+            imageIndex: item.idx,
+            imageName: item.img.originalname,
+            start: item.parsed.start,
+            end: item.parsed.end,
+          };
+        } else {
+          const start = cursor;
+          let end = item.parsed.time;
+          if (i === withTimestamps.length - 1 && audioDuration > end) {
+            end = audioDuration;
+          }
+          cursor = end;
+          return {
+            imageIndex: item.idx,
+            imageName: item.img.originalname,
+            start,
+            end,
+          };
+        }
+      });
+    } else {
+      // Divide evenly across audio length
+      const totalDur = audioDuration > 0 ? audioDuration : uploadedImages.length * 3.5;
+      const step = totalDur / uploadedImages.length;
+      entries = uploadedImages.map((img, idx) => ({
+        imageIndex: idx,
+        imageName: img.originalname,
+        start: Number((idx * step).toFixed(2)),
+        end:
+          idx === uploadedImages.length - 1
+            ? Number(totalDur.toFixed(2))
+            : Number(((idx + 1) * step).toFixed(2)),
+      }));
+    }
+  }
+
+  function resolveImage(entry, entryIdx) {
+    if (typeof entry.imageIndex === 'number' && imageByIndex[entry.imageIndex]) {
+      return imageByIndex[entry.imageIndex];
+    }
+    const nameCandidate = entry.imageName || entry.image || entry.file || entry.name;
+    if (nameCandidate) {
+      const strVal = String(nameCandidate).trim();
+      const numVal = parseInt(strVal, 10);
+      if (!isNaN(numVal) && String(numVal) === strVal && imageByIndex[numVal]) {
+        return imageByIndex[numVal];
+      }
+      if (imageByName.has(strVal)) return imageByName.get(strVal);
+      if (imageByName.has(strVal.toLowerCase())) return imageByName.get(strVal.toLowerCase());
+      const baseOnly = path.parse(strVal).name.toLowerCase();
+      if (imageByName.has(baseOnly)) return imageByName.get(baseOnly);
+    }
+    return imageByIndex[entryIdx] || null;
+  }
+
+  // Parse and calculate raw segments
+  const parsedClips = [];
+  let runningStart = 0;
+
+  for (let i = 0; i < entries.length; i++) {
+    const raw = entries[i];
+    const matchedFile = resolveImage(raw, i);
+
+    if (!matchedFile) {
+      const availableNames = uploadedImages.map((img) => img.originalname).join(', ');
+      throw new Error(
+        `Clip #${i + 1} could not be matched to an uploaded image. Entry: ${JSON.stringify(
+          raw
+        )}. Available: [${availableNames}]`
+      );
+    }
+
+    let start = null;
+    let end = null;
+    let duration = null;
+
+    if (raw.start !== undefined || raw.startTime !== undefined || raw.from !== undefined) {
+      const s = raw.start ?? raw.startTime ?? raw.from;
+      start = parseFloat(s);
+    }
+
+    if (raw.end !== undefined || raw.endTime !== undefined || raw.to !== undefined) {
+      const e = raw.end ?? raw.endTime ?? raw.to;
+      end = parseFloat(e);
+    }
+
+    if (raw.duration !== undefined || raw.length !== undefined) {
+      const d = raw.duration ?? raw.length;
+      duration = parseFloat(d);
+    }
+
+    // Try extracting from filename if end not provided
+    if (end === null && duration === null) {
+      const fnParsed = extractTimestampFromFilename(matchedFile.originalname);
+      if (fnParsed) {
+        if (fnParsed.type === 'range') {
+          start = fnParsed.start;
+          end = fnParsed.end;
+        } else if (fnParsed.type === 'point') {
+          end = fnParsed.time;
+        }
+      }
+    }
+
+    if (start === null || isNaN(start)) {
+      start = runningStart;
+    }
+
+    if (end !== null && !isNaN(end)) {
+      if (end <= start) {
+        throw new Error(
+          `Clip #${i + 1} (${matchedFile.originalname}): 'end' (${end}s) must be greater than 'start' (${start}s).`
+        );
+      }
+      duration = end - start;
+    } else if (duration !== null && !isNaN(duration)) {
+      if (duration <= 0) {
+        throw new Error(
+          `Clip #${i + 1} (${matchedFile.originalname}): 'duration' (${duration}s) must be positive.`
+        );
+      }
+      end = start + duration;
+    } else {
+      duration = 3.0;
+      end = start + 3.0;
+    }
+
+    runningStart = end;
+
+    parsedClips.push({
+      originalIndex: i,
+      imageFile: matchedFile,
+      imageName: matchedFile.originalname,
+      filePath: matchedFile.path,
+      start: Number(start.toFixed(3)),
+      end: Number(end.toFixed(3)),
+      duration: Number(duration.toFixed(3)),
+    });
+  }
+
+  // Sort chronologically by start time
+  parsedClips.sort((a, b) => a.start - b.start);
+
+  // Normalize gaps and align with audio voiceover
+  const normalizedClips = [];
+  let currentTime = 0;
+
+  for (let i = 0; i < parsedClips.length; i++) {
+    const clip = parsedClips[i];
+
+    // Gap before this clip?
+    if (clip.start > currentTime + 0.001) {
+      const gapDuration = Number((clip.start - currentTime).toFixed(3));
+      warnings.push(
+        `Timeline gap detected: ${currentTime}s to ${clip.start}s (${gapDuration}s). Holding visual to preserve sync.`
+      );
+      if (normalizedClips.length === 0) {
+        normalizedClips.push({
+          imageName: `${clip.imageName} (intro hold)`,
+          filePath: clip.filePath,
+          start: currentTime,
+          end: clip.start,
+          duration: gapDuration,
+        });
+      } else {
+        const prev = normalizedClips[normalizedClips.length - 1];
+        normalizedClips.push({
+          imageName: `${prev.imageName} (gap hold)`,
+          filePath: prev.filePath,
+          start: currentTime,
+          end: clip.start,
+          duration: gapDuration,
+        });
+      }
+      currentTime = clip.start;
+    }
+
+    normalizedClips.push({
+      imageName: clip.imageName,
+      filePath: clip.filePath,
+      start: currentTime,
+      end: Number((currentTime + clip.duration).toFixed(3)),
+      duration: clip.duration,
+    });
+    currentTime = Number((currentTime + clip.duration).toFixed(3));
+  }
+
+  // Check audio duration alignment
+  const safeAudioDuration = typeof audioDuration === 'number' && audioDuration > 0 ? audioDuration : currentTime;
+  const audioRounded = Number(safeAudioDuration.toFixed(3));
+
+  if (currentTime < audioRounded - 0.05) {
+    const remainingTime = Number((audioRounded - currentTime).toFixed(3));
+    const lastClip = normalizedClips[normalizedClips.length - 1];
+    warnings.push(
+      `Images timeline (${currentTime}s) is shorter than audio (${audioRounded}s). Extending last image (${lastClip.imageName}) by ${remainingTime}s.`
+    );
+    lastClip.duration = Number((lastClip.duration + remainingTime).toFixed(3));
+    lastClip.end = audioRounded;
+    currentTime = audioRounded;
+  }
+
+  // Generate ffconcat format file
+  const concatFilePath = path.join(projectDir, 'concat.txt');
+  const lines = ['ffconcat version 1.0'];
+
+  normalizedClips.forEach((clip) => {
+    const normalizedPath = clip.filePath.split(path.sep).join('/');
+    const safePath = normalizedPath.replace(/'/g, "'\\''");
+    lines.push(`file '${safePath}'`);
+    lines.push(`duration ${clip.duration.toFixed(3)}`);
+  });
+
+  if (normalizedClips.length > 0) {
+    const lastPath = normalizedClips[normalizedClips.length - 1].filePath.split(path.sep).join('/').replace(/'/g, "'\\''");
+    lines.push(`file '${lastPath}'`);
+  }
+
+  fs.writeFileSync(concatFilePath, lines.join('\n'), 'utf8');
+
+  return {
+    clips: normalizedClips,
+    concatFilePath,
+    totalVisualDuration: currentTime,
+    audioDuration: audioRounded,
+    warnings,
+    summary: {
+      clipCount: normalizedClips.length,
+      visualDurationSec: currentTime,
+      audioDurationSec: audioRounded,
+    },
+  };
+}
+
+module.exports = {
+  parseAndGenerateTimeline,
+  extractTimestampFromFilename,
+};
