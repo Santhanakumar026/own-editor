@@ -1,13 +1,12 @@
 Set WshShell = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 
-' Get directory of this script
-scriptDir = fso.GetParentFolderName(WScript.ScriptFullName)
+scriptDir = "D:\Websites\Own Editing Software"
 WshShell.CurrentDirectory = scriptDir
 
-' Launch node server silently (0 = hidden window)
-WshShell.Run "cmd /c node server.js", 0, False
+' Run node server using explicit node path completely hidden (0)
+WshShell.Run "cmd /c ""C:\Program Files\nodejs\node.exe"" server.js", 0, False
 
-' Wait 2 seconds and open browser to localhost:5000
-WScript.Sleep 2000
+' Wait 2.5 seconds for server to start, then open browser
+WScript.Sleep 2500
 WshShell.Run "http://localhost:5000"

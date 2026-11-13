@@ -1,28 +1,23 @@
 @echo off
-title VideoSync Studio Launcher
+title VideoSync Studio
 echo ====================================================
-echo   VideoSync Studio - Starting Engine & UI
+echo   VideoSync Studio - Starting Local Server
 echo ====================================================
 echo.
 
-echo [1/2] Starting Backend Engine (FFmpeg & Node API)...
-start "VideoSync Backend Engine" cmd /k "cd /d "%~dp0" && node server.js"
+cd /d "%~dp0"
 
-echo [2/2] Starting Frontend UI (React + Vite)...
-start "VideoSync Frontend UI" cmd /k "cd /d "%~dp0" && npm run dev"
+echo Starting server on http://localhost:5000 ...
+start "VideoSync Studio Engine" cmd /k ""C:\Program Files\nodejs\node.exe" server.js"
 
-echo.
-echo Waiting for servers to initialize...
-timeout /t 4 >nul
-
-echo Opening Browser at http://localhost:3000 ...
-start http://localhost:3000
+timeout /t 3 >nul
+start http://localhost:5000
 
 echo.
 echo ====================================================
-echo  VideoSync Studio is now RUNNING!
-echo  Open: http://localhost:3000
+echo  VideoSync Studio is RUNNING on http://localhost:5000
 echo.
-echo  NOTE: Keep the terminal windows open while using.
+echo  NOTE: Keep the "VideoSync Studio Engine" window open!
+echo  Antigravity open panna thevaiye illa.
 echo ====================================================
 pause

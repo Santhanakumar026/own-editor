@@ -14,3 +14,4 @@ if exist "%SHORTCUT%" (
 )
 
 pause
+

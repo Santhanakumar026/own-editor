@@ -13,3 +13,4 @@ echo [SUCCESS] Shortcut created on your Desktop:
 echo "%DESKTOP%"
 echo.
 pause
+
