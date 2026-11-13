@@ -1,0 +1,16 @@
+{
+  "name": "own-editing-software",
+  "version": "1.0.0",
+  "description": "Automated Audio-Image Timeline Synchronization Video Editing Web Application",
+  "scripts": {
+    "start": "node backend/server.js",
+    "dev:backend": "node --watch backend/server.js",
+    "dev:frontend": "npm run dev --prefix frontend",
+    "install:all": "npm install --prefix backend && npm install --prefix frontend",
+    "build:frontend": "npm run build --prefix frontend"
+  },
+  "keywords": ["ffmpeg", "video-editing", "react", "express", "timeline-sync"],
+  "author": "",
+  "license": "ISC"
+}
+
