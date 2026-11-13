@@ -6,3 +6,4 @@ export default function handler(req, res) {
     message: 'Frontend serverless API is online.',
   });
 }
+
