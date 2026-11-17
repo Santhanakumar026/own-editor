@@ -1,18 +1,45 @@
 import React, { useRef } from 'react';
 
 const CAPCUT_TRANSITION_LIST = [
+  // Fades & Dissolves
+  'fade',
+  'fadewhite',
+  'fadeblack',
+  'dissolve',
+  'hblur',
+  // Dynamic & Depth
+  'zoomin',
+  'distance',
+  // Butter-Smooth Glides (Eased)
+  'smoothleft',
+  'smoothright',
+  'smoothup',
+  'smoothdown',
+  // Modern Slides
   'slideleft',
   'slideright',
   'slideup',
   'slidedown',
+  // Directional Wipes
   'wipeleft',
   'wiperight',
-  'circlecrop',
-  'rectcrop',
-  'fade',
-  'fadewhite',
-  'smoothleft',
-  'smoothright',
+  'wipeup',
+  'wipedown',
+  // Diagonal Wipes
+  'wipetl',
+  'wipetr',
+  'wipebl',
+  'wipebr',
+  // Covers & Reveals
+  'coverleft',
+  'coverright',
+  'coverup',
+  'coverdown',
+  'revealleft',
+  'revealright',
+  // Atmospheric Wind Sweeps
+  'hlwind',
+  'hrwind',
 ];
 
 const MOTION_LIST = ['zoomin', 'zoomout', 'panleft', 'panright'];
@@ -31,7 +58,7 @@ export default function CapCutEffectsSuite({
   onChangeLogoPosition,
   logoWidth = 160,
   onChangeLogoWidth,
-  transitionDuration = 0.5,
+  transitionDuration = 0.8,
   onChangeTransitionDuration,
 }) {
   const fileInputRef = useRef(null);
@@ -84,17 +111,33 @@ export default function CapCutEffectsSuite({
    */
   const handleApplyTransitionToAll = (transType) => {
     if (!clips || clips.length === 0) return;
+
+    const dissolves = ['fade', 'dissolve', 'hblur', 'fadewhite', 'fadeblack'];
+    const smoothGlides = ['smoothleft', 'smoothright', 'smoothup', 'smoothdown'];
+    const slides = ['slideleft', 'slideright', 'slideup', 'slidedown'];
+    const dynamicZoom = ['zoomin', 'distance'];
+    const wipes = ['wipeleft', 'wiperight', 'wipeup', 'wipedown', 'wipetl', 'wipetr', 'hlwind', 'hrwind'];
+    const covers = ['coverleft', 'coverright', 'coverup', 'coverdown', 'revealleft', 'revealright'];
+
     const updated = clips.map((clip, idx) => {
       if (idx === clips.length - 1) return { ...clip, transition: 'none' };
       let chosen = transType;
       if (transType === 'random') {
         chosen = CAPCUT_TRANSITION_LIST[Math.floor(Math.random() * CAPCUT_TRANSITION_LIST.length)];
+      } else if (transType === 'dissolve') {
+        chosen = dissolves[Math.floor(Math.random() * dissolves.length)];
+      } else if (transType === 'smooth') {
+        chosen = smoothGlides[Math.floor(Math.random() * smoothGlides.length)];
       } else if (transType === 'slide') {
-        const slides = ['slideleft', 'slideright', 'slideup', 'slidedown'];
         chosen = slides[Math.floor(Math.random() * slides.length)];
+      } else if (transType === 'zoomin') {
+        chosen = dynamicZoom[Math.floor(Math.random() * dynamicZoom.length)];
       } else if (transType === 'wipe') {
-        const wipes = ['wipeleft', 'wiperight'];
         chosen = wipes[Math.floor(Math.random() * wipes.length)];
+      } else if (transType === 'cover') {
+        chosen = covers[Math.floor(Math.random() * covers.length)];
+      } else if (transType === 'fadewhite') {
+        chosen = 'fadewhite';
       }
       return { ...clip, transition: chosen };
     });
@@ -525,7 +568,7 @@ export default function CapCutEffectsSuite({
             </div>
           </div>
           <p style={{ fontSize: '11.5px', color: 'var(--text-secondary)', margin: '8px 0 10px' }}>
-            Smooth slide, wipe, circle crop, and dissolve transitions locked to audio timestamps.
+            Ultra-smooth cinema transitions (Blur Dissolve, Dynamic Zoom, Smooth Glides, Flash, Wipes, Covers) locked frame-accurately to audio timestamps.
           </p>
 
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
@@ -534,6 +577,7 @@ export default function CapCutEffectsSuite({
               className="btn btn-secondary"
               style={{ fontSize: '11px', padding: '4px 8px' }}
               onClick={() => handleApplyTransitionToAll('random')}
+              title="Apply varied cinematic transitions across all cuts (zero circles)"
             >
               🎲 Random All
             </button>
@@ -541,25 +585,64 @@ export default function CapCutEffectsSuite({
               type="button"
               className="btn btn-secondary"
               style={{ fontSize: '11px', padding: '4px 8px' }}
-              onClick={() => handleApplyTransitionToAll('slide')}
+              onClick={() => handleApplyTransitionToAll('dissolve')}
+              title="Dissolve, Motion Blur Dissolve & Film Fades"
             >
-              🎬 Slide
+              ✨ Dissolves & Blur
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              style={{ fontSize: '11px', padding: '4px 8px' }}
+              onClick={() => handleApplyTransitionToAll('smooth')}
+              title="Butter-smooth eased directional glides"
+            >
+              🎬 Smooth Glides
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              style={{ fontSize: '11px', padding: '4px 8px' }}
+              onClick={() => handleApplyTransitionToAll('zoomin')}
+              title="Dynamic push in & warp depth"
+            >
+              🚀 Zoom Push
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              style={{ fontSize: '11px', padding: '4px 8px' }}
+              onClick={() => handleApplyTransitionToAll('slide')}
+              title="Modern slide left/right/up/down"
+            >
+              📱 Slide
             </button>
             <button
               type="button"
               className="btn btn-secondary"
               style={{ fontSize: '11px', padding: '4px 8px' }}
               onClick={() => handleApplyTransitionToAll('wipe')}
+              title="Directional & diagonal film wipes and wind breeze"
             >
-              🌊 Wipe
+              🌊 Wipes & Wind
             </button>
             <button
               type="button"
               className="btn btn-secondary"
               style={{ fontSize: '11px', padding: '4px 8px' }}
-              onClick={() => handleApplyTransitionToAll('circlecrop')}
+              onClick={() => handleApplyTransitionToAll('cover')}
+              title="Page covers and film reveals"
             >
-              ⭕ Circle
+              📑 Covers & Reveals
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              style={{ fontSize: '11px', padding: '4px 8px' }}
+              onClick={() => handleApplyTransitionToAll('fadewhite')}
+              title="Flash white glow effect"
+            >
+              ⚡ Flash White
             </button>
             <button
               type="button"

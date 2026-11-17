@@ -304,13 +304,24 @@ export default function TimestampEditor({
                             }}
                           >
                             <option value="none">None (Cut)</option>
+                            <option value="fade">Dissolve (Cross Fade) 🌫️</option>
+                            <option value="dissolve">Film Dissolve 🎞️</option>
+                            <option value="hblur">Motion Blur Dissolve 💨</option>
+                            <option value="fadewhite">Flash White (Glow) ⚡</option>
+                            <option value="fadeblack">Dip to Black 🎬</option>
+                            <option value="zoomin">Zoom In Push 🚀</option>
+                            <option value="smoothleft">Smooth Glide Left ✨</option>
+                            <option value="smoothright">Smooth Glide Right ✨</option>
+                            <option value="smoothup">Smooth Glide Up ✨</option>
+                            <option value="smoothdown">Smooth Glide Down ✨</option>
                             <option value="slideleft">Slide Left 🎬</option>
                             <option value="slideright">Slide Right 🎬</option>
-                            <option value="circlecrop">Circle Crop ⭕</option>
                             <option value="wipeleft">Wipe Left 🌊</option>
-                            <option value="smoothleft">Smooth Left ✨</option>
-                            <option value="fadewhite">Flash White ⚡</option>
-                            <option value="fade">Dissolve Fade 🌫️</option>
+                            <option value="wiperight">Wipe Right 🌊</option>
+                            <option value="wipetl">Diagonal Wipe 🌊</option>
+                            <option value="coverleft">Cover Left 📑</option>
+                            <option value="revealleft">Reveal Left 📑</option>
+                            <option value="hlwind">Wind Breeze 🍃</option>
                           </select>
                         ) : (
                           <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>End</span>

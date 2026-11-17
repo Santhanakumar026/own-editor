@@ -104,23 +104,48 @@ function parseProgressLine(line, totalDuration) {
 }
 
 /**
- * Valid CapCut transitions supported by FFmpeg xfade
+ * Valid CapCut transitions supported by FFmpeg xfade (Curated top-tier transitions; NO circle transitions)
  */
 const CAPCUT_TRANSITIONS = [
+  // Fades & Dissolves
+  'fade',
+  'fadewhite',
+  'fadeblack',
+  'dissolve',
+  'hblur',
+  // Dynamic & Depth
+  'zoomin',
+  'distance',
+  // Butter-Smooth Glides (Eased)
+  'smoothleft',
+  'smoothright',
+  'smoothup',
+  'smoothdown',
+  // Modern Slides
   'slideleft',
   'slideright',
   'slideup',
   'slidedown',
+  // Directional Wipes
   'wipeleft',
   'wiperight',
-  'circlecrop',
-  'rectcrop',
-  'fade',
-  'fadewhite',
-  'fadeblack',
-  'smoothleft',
-  'smoothright',
-  'distance',
+  'wipeup',
+  'wipedown',
+  // Diagonal Wipes
+  'wipetl',
+  'wipetr',
+  'wipebl',
+  'wipebr',
+  // Covers & Reveals
+  'coverleft',
+  'coverright',
+  'coverup',
+  'coverdown',
+  'revealleft',
+  'revealright',
+  // Atmospheric Wind Sweeps
+  'hlwind',
+  'hrwind',
 ];
 
 /**
@@ -251,7 +276,7 @@ function runFinalAssembly(ffmpegArgs, totalDuration, onProgress, startPct = 70, 
  * @param {string} [options.logoFilePath=null] - User uploaded brand logo to cover watermark
  * @param {string} [options.logoPosition='bottom-right'] - Default for Google Flow
  * @param {number} [options.logoWidth=160] - Logo width in pixels
- * @param {number} [options.transitionDuration=0.5] - Transition duration in seconds
+ * @param {number} [options.transitionDuration=0.8] - Transition duration in seconds
  * @param {Function} [options.onProgress] - Callback for real-time progress
  * @returns {Promise<Object>} - Render results
  */
@@ -269,7 +294,7 @@ async function renderVideo({
   logoFilePath = null,
   logoPosition = 'bottom-right',
   logoWidth = 160,
-  transitionDuration = 0.5,
+  transitionDuration = 0.8,
   onProgress,
 }) {
   const startTime = Date.now();
