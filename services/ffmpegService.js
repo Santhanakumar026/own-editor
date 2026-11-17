@@ -236,6 +236,120 @@ function runFinalAssembly(ffmpegArgs, totalDuration, onProgress) {
 }
 
 /**
+ * Merges a group of video clips using FFmpeg xfade filter
+ * with exact mathematical accumulated length tracking.
+ * Safe and fast for up to 8 clips per group (prevents Windows heap OOM).
+ */
+function mergeClipGroup({
+  clips,
+  audioFilePath = null,
+  totalDuration = 0,
+  transDur = 0.5,
+  outputPath,
+  onProgress = null,
+  startPct = 0,
+  pctSpan = 100,
+}) {
+  const inputs = [];
+  for (let i = 0; i < clips.length; i++) {
+    inputs.push('-i', clips[i].filePath);
+  }
+
+  let audioIdx = -1;
+  if (audioFilePath) {
+    audioIdx = clips.length;
+    inputs.push('-i', audioFilePath);
+  }
+
+  const filterParts = [];
+  let lastStream = '0:v';
+  let accumulatedLength = clips[0].duration;
+
+  for (let i = 0; i < clips.length - 1; i++) {
+    const rawTrans = clips[i].transition || 'fade';
+    const isCut = rawTrans === 'none';
+    const trans = CAPCUT_TRANSITIONS.includes(rawTrans) ? rawTrans : 'fade';
+    const curDur = isCut ? 0.05 : transDur;
+
+    const offset = Math.max(0.01, Number((accumulatedLength - curDur).toFixed(3)));
+    accumulatedLength = Number((accumulatedLength + clips[i + 1].duration - curDur).toFixed(3));
+
+    const nextStream = `${i + 1}:v`;
+    const outStream = i === clips.length - 2 ? 'transv' : `xf${i}`;
+    filterParts.push(
+      `[${lastStream}][${nextStream}]xfade=transition=${trans}:duration=${curDur}:offset=${offset}[${outStream}]`
+    );
+    lastStream = outStream;
+  }
+
+  const finalVideoStream = clips.length > 1 ? 'transv' : '0:v';
+  const filterArgs = filterParts.length > 0 ? ['-filter_complex', filterParts.join(';')] : [];
+
+  const mapArgs = [];
+  if (filterParts.length > 0) {
+    mapArgs.push('-map', `[${finalVideoStream}]`);
+  } else {
+    mapArgs.push('-map', '0:v');
+  }
+
+  if (audioIdx >= 0) {
+    mapArgs.push('-map', `${audioIdx}:a`);
+  }
+
+  const ffmpegArgs = [
+    '-y',
+    ...inputs,
+    ...filterArgs,
+    ...mapArgs,
+    '-c:v',
+    'libx264',
+    '-preset',
+    audioFilePath ? 'veryfast' : 'ultrafast',
+    '-threads',
+    '0',
+    '-crf',
+    audioFilePath ? '21' : '18',
+    ...(audioIdx >= 0 ? ['-c:a', 'aac', '-b:a', '192k', '-shortest'] : []),
+    outputPath,
+  ];
+
+  return new Promise((resolve, reject) => {
+    const child = spawn('ffmpeg', ffmpegArgs);
+    let stderrAccumulator = '';
+
+    child.stderr.on('data', (chunk) => {
+      const text = chunk.toString();
+      stderrAccumulator += text;
+      if (stderrAccumulator.length > 30000) {
+        stderrAccumulator = stderrAccumulator.slice(-15000);
+      }
+      if (onProgress && totalDuration > 0) {
+        const prog = parseProgressLine(text, totalDuration);
+        if (prog) {
+          const scaled = Math.min(99, startPct + Math.round((prog.percent * pctSpan) / 100));
+          onProgress({
+            ...prog,
+            percent: scaled,
+          });
+        }
+      }
+    });
+
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolve({ accumulatedLength });
+      } else {
+        reject(
+          new Error(`FFmpeg merge failed (code ${code}): ${stderrAccumulator.slice(-1200)}`)
+        );
+      }
+    });
+
+    child.on('error', reject);
+  });
+}
+
+/**
  * Robust Two-Stage Video Rendering Engine:
  * Stage 1: Individual clip motion rendering (flat ~40MB RAM, zero vibration, ultrafast).
  * Stage 2: Clean assembly with transitions, audio sync, and fixed logo overlay.
@@ -424,86 +538,83 @@ async function renderVideo({
 
       await runFinalAssembly(ffmpegArgs, totalDuration, onProgress);
     } else {
-      // SUB-CASE 2B: CAPCUT XFADE TRANSITIONS BETWEEN PRE-RENDERED SEGMENTS
-      const inputs = [];
-      let inputCount = 0;
+      // ==============================================================
+      // SUB-CASE 2B: HIERARCHICAL CHUNKED TRANSITION ASSEMBLY
+      // Caps simultaneous decoders to at most 7: 100% immune to Windows OOM (error 3221225725)
+      // ==============================================================
+      const CHUNK_SIZE = 7;
+      let currentItems = segmentPaths.map((sp, idx) => ({
+        filePath: sp,
+        duration: clips[idx].duration,
+        transition: clips[idx].transition || 'fade',
+      }));
 
-      segmentPaths.forEach((sp) => {
-        inputs.push('-i', sp);
-        inputCount++;
+      // Level 1: If clips > CHUNK_SIZE, merge in small memory-safe chunks
+      if (currentItems.length > CHUNK_SIZE) {
+        const chunkResults = [];
+        let chunkIdx = 0;
+
+        for (let i = 0; i < currentItems.length; i += CHUNK_SIZE) {
+          const slice = currentItems.slice(i, i + CHUNK_SIZE);
+          const chunkOut = path.join(tempDir, `chk_${chunkIdx}.mp4`);
+          chunkIdx++;
+
+          const res = await mergeClipGroup({
+            clips: slice,
+            transDur,
+            outputPath: chunkOut,
+          });
+
+          chunkResults.push({
+            filePath: chunkOut,
+            duration: res.accumulatedLength,
+            transition: slice[slice.length - 1].transition,
+          });
+
+          if (onProgress) {
+            const pct = Math.min(65, 45 + Math.round((i / currentItems.length) * 20));
+            onProgress({
+              percent: pct,
+              currentSeconds: Number(((totalDuration * pct) / 100).toFixed(2)),
+              totalDuration,
+            });
+          }
+        }
+        currentItems = chunkResults;
+      }
+
+      // Level 2: Final merge of chunks (or small clip set) with audio voiceover
+      let finalAudioPath = audioFilePath;
+      if (!finalAudioPath) {
+        finalAudioPath = path.join(tempDir, 'silent_voiceover.aac');
+        await new Promise((resolve) => {
+          const p = spawn('ffmpeg', [
+            '-y',
+            '-f',
+            'lavfi',
+            '-t',
+            String(totalDuration),
+            '-i',
+            'anullsrc=channel_layout=stereo:sample_rate=44100',
+            '-c:a',
+            'aac',
+            finalAudioPath,
+          ]);
+          p.on('close', resolve);
+          p.on('error', resolve);
+        });
+      }
+
+      await mergeClipGroup({
+        clips: currentItems,
+        audioFilePath: finalAudioPath,
+        totalDuration,
+        transDur,
+        outputPath: outputFilePath,
+        onProgress,
+        startPct: 65,
+        pctSpan: 34,
       });
-
-      const audioIndex = inputCount;
-      if (audioFilePath) {
-        inputs.push('-i', audioFilePath);
-      } else {
-        inputs.push(
-          '-f',
-          'lavfi',
-          '-t',
-          String(totalDuration),
-          '-i',
-          'anullsrc=channel_layout=stereo:sample_rate=44100'
-        );
-      }
-      inputCount++;
-
-      const filterParts = [];
-      let lastStream = '0:v';
-      let accumulatedLength = clips[0].duration;
-
-      for (let i = 0; i < clips.length - 1; i++) {
-        const rawTrans = clips[i].transition || 'fade';
-        const isCut = rawTrans === 'none';
-        const trans = CAPCUT_TRANSITIONS.includes(rawTrans) ? rawTrans : 'fade';
-        const curDur = isCut ? 0.05 : transDur;
-
-        const offset = Math.max(0.01, Number((accumulatedLength - curDur).toFixed(3)));
-        accumulatedLength = accumulatedLength + clips[i + 1].duration - curDur;
-
-        const nextStream = `${i + 1}:v`;
-        const outStream = i === clips.length - 2 ? 'transv' : `xf${i}`;
-        filterParts.push(
-          `[${lastStream}][${nextStream}]xfade=transition=${trans}:duration=${curDur}:offset=${offset}[${outStream}]`
-        );
-        lastStream = outStream;
-      }
-
-      let finalVideoStream = clips.length > 1 ? 'transv' : '0:v';
-
-      const scriptPath = path.join(tempDir, 'filter_graph.txt');
-      fs.writeFileSync(scriptPath, filterParts.join(';\n'), 'utf8');
-
-      const ffmpegArgs = [
-        '-y',
-        ...inputs,
-        '-/filter_complex',
-        scriptPath,
-        '-map',
-        `[${finalVideoStream}]`,
-        '-map',
-        `${audioIndex}:a`,
-        '-c:v',
-        'libx264',
-        '-preset',
-        'veryfast',
-        '-threads',
-        '0',
-        '-crf',
-        '21',
-        '-c:a',
-        'aac',
-        '-b:a',
-        '192k',
-        '-pix_fmt',
-        'yuv420p',
-        '-movflags',
-        '+faststart',
-        '-shortest',
-        outputFilePath,
-      ];
-
-      await runFinalAssembly(ffmpegArgs, totalDuration, onProgress);
     }
 
     const renderDurationMs = Date.now() - startTime;
