@@ -105,19 +105,53 @@ const CAPCUT_TRANSITIONS = [
 
 /**
  * Helper to render an individual image into an ultrafast standardized video clip segment.
- * Keeps memory usage flat (~40MB) and eliminates FFmpeg multi-stream memory crashes.
+ * If user provided a brand logo, the logo is directly attached to the image at the watermark spot
+ * BEFORE any motion is computed. This guarantees that when the camera zooms in, zooms out, or pans,
+ * the logo travels WITH the image and permanently covers the watermark at all times with ZERO cropping!
  */
-function renderClipSegment({ imagePath, filterString, outputPath }) {
+function renderClipSegment({
+  imagePath,
+  logoPath = null,
+  logoPosition = 'bottom-right',
+  logoWidth = 180,
+  filterString,
+  outputPath,
+}) {
+  const inputs = ['-i', imagePath];
+  let filterPrefix = '';
+  let sourceStream = '0:v';
+
+  if (logoPath) {
+    inputs.push('-i', logoPath);
+    let overlayCoord = 'W-w-24:H-h-24';
+    if (logoPosition === 'bottom-left') overlayCoord = '24:H-h-24';
+    else if (logoPosition === 'top-right') overlayCoord = 'W-w-24:24';
+    else if (logoPosition === 'top-left') overlayCoord = '24:24';
+    else if (logoPosition === 'center') overlayCoord = '(W-w)/2:(H-h)/2';
+
+    const safeW = Math.max(60, Math.min(600, parseInt(logoWidth, 10) || 180));
+    filterPrefix = `[1:v]scale=${safeW}:-1[logo];[0:v][logo]overlay=${overlayCoord}[branded];`;
+    sourceStream = 'branded';
+  }
+
+  const fullFilter = `${filterPrefix}[${sourceStream}]${filterString}[v]`;
+
   return new Promise((resolve, reject) => {
     const p = spawn('ffmpeg', [
       '-y',
-      '-i', imagePath,
-      '-filter_complex', `[0:v]${filterString}[v]`,
-      '-map', '[v]',
-      '-c:v', 'libx264',
-      '-preset', 'ultrafast',
-      '-crf', '18',
-      '-pix_fmt', 'yuv420p',
+      ...inputs,
+      '-filter_complex',
+      fullFilter,
+      '-map',
+      '[v]',
+      '-c:v',
+      'libx264',
+      '-preset',
+      'ultrafast',
+      '-crf',
+      '18',
+      '-pix_fmt',
+      'yuv420p',
       outputPath,
     ]);
 
@@ -261,13 +295,13 @@ async function renderVideo({
       const motion = clip.motion || 'none';
 
       if (motion === 'zoomin') {
-        motionFilter = `zoompan=z='1.0+0.15*(on/${totalFrames})':d=${totalFrames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${width}x${height}:fps=30`;
+        motionFilter = `scale=2880:2880:force_original_aspect_ratio=increase:flags=bicubic,zoompan=z='1.0+0.18*(on/${totalFrames})':d=${totalFrames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${width}x${height}:fps=30`;
       } else if (motion === 'zoomout') {
-        motionFilter = `zoompan=z='1.15-0.15*(on/${totalFrames})':d=${totalFrames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${width}x${height}:fps=30`;
+        motionFilter = `scale=2880:2880:force_original_aspect_ratio=increase:flags=bicubic,zoompan=z='1.18-0.18*(on/${totalFrames})':d=${totalFrames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${width}x${height}:fps=30`;
       } else if (motion === 'panleft') {
-        motionFilter = `zoompan=z=1.12:d=${totalFrames}:x='(iw-iw/zoom)*(1-on/${totalFrames})':y='(ih-ih/zoom)/2':s=${width}x${height}:fps=30`;
+        motionFilter = `scale=2880:2880:force_original_aspect_ratio=increase:flags=bicubic,zoompan=z=1.15:d=${totalFrames}:x='(iw-iw/zoom)*(1-on/${totalFrames})':y='(ih-ih/zoom)/2':s=${width}x${height}:fps=30`;
       } else if (motion === 'panright') {
-        motionFilter = `zoompan=z=1.12:d=${totalFrames}:x='(iw-iw/zoom)*(on/${totalFrames})':y='(ih-ih/zoom)/2':s=${width}x${height}:fps=30`;
+        motionFilter = `scale=2880:2880:force_original_aspect_ratio=increase:flags=bicubic,zoompan=z=1.15:d=${totalFrames}:x='(iw-iw/zoom)*(on/${totalFrames})':y='(ih-ih/zoom)/2':s=${width}x${height}:fps=30`;
       } else {
         if (backgroundMode === 'blur') {
           motionFilter = `split=2[main][bg];[bg]scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},boxblur=25:5[bl];[main]scale=${width}:${height}:force_original_aspect_ratio=decrease[fg];[bl][fg]overlay=(${width}-w)/2:(${height}-h)/2,setsar=1,fps=30`;
@@ -276,7 +310,7 @@ async function renderVideo({
         }
       }
 
-      // Watermark filter if no logo is uploaded
+      // Watermark filter only if NO logo is uploaded (zero cropping when logo is uploaded)
       let wmFilter = '';
       if (!logoFilePath && removeWatermark) {
         if (watermarkMode === 'delogo') {
@@ -286,8 +320,13 @@ async function renderVideo({
         }
       }
 
+      // Render clip segment with logo attached directly on the image BEFORE motion
+      // Logo moves WITH the image during zoom/pan, stays 100% locked on watermark, 0% image crop!
       await renderClipSegment({
         imagePath: clip.filePath,
+        logoPath: logoFilePath,
+        logoPosition,
+        logoWidth,
         filterString: `${wmFilter}${motionFilter},format=yuv420p`,
         outputPath: segPath,
       });
@@ -303,7 +342,8 @@ async function renderVideo({
     }
 
     // ==============================================================
-    // STAGE 2: ASSEMBLE WITH TRANSITIONS, LOGO OVERLAY & AUDIO
+    // STAGE 2: ASSEMBLE WITH TRANSITIONS & AUDIO
+    // (Logo is already baked onto each segment image with zero cropping)
     // ==============================================================
     if (!hasAnyTransition) {
       // SUB-CASE 2A: INSTANT CONCAT DEMUXER (ZERO RE-ENCODING DELAY)
@@ -313,25 +353,6 @@ async function renderVideo({
 
       const inputs = ['-f', 'concat', '-safe', '0', '-i', concatListPath];
       let inputCount = 1;
-
-      let filterString = '';
-      let videoMapTarget = '0:v';
-
-      if (logoFilePath) {
-        const logoIndex = inputCount;
-        inputs.push('-i', logoFilePath);
-        inputCount++;
-
-        let overlayCoord = 'W-w-24:H-h-24';
-        if (logoPosition === 'bottom-left') overlayCoord = '24:H-h-24';
-        else if (logoPosition === 'top-right') overlayCoord = 'W-w-24:24';
-        else if (logoPosition === 'top-left') overlayCoord = '24:24';
-        else if (logoPosition === 'center') overlayCoord = '(W-w)/2:(H-h)/2';
-
-        const safeWidth = Math.max(60, Math.min(600, parseInt(logoWidth, 10) || 160));
-        filterString = `[${logoIndex}:v]scale=${safeWidth}:-1[logo];[0:v][logo]overlay=${overlayCoord}[finalv]`;
-        videoMapTarget = '[finalv]';
-      }
 
       const audioIndex = inputCount;
       if (audioFilePath) {
@@ -351,7 +372,8 @@ async function renderVideo({
       const ffmpegArgs = [
         '-y',
         ...inputs,
-        ...(filterString ? ['-filter_complex', filterString, '-map', videoMapTarget] : ['-map', '0:v']),
+        '-map',
+        '0:v',
         '-map',
         `${audioIndex}:a`,
         '-c:v',
@@ -416,24 +438,6 @@ async function renderVideo({
       }
 
       let finalVideoStream = clips.length > 1 ? 'transv' : '0:v';
-
-      if (logoFilePath) {
-        const logoIndex = inputCount;
-        inputs.push('-i', logoFilePath);
-        inputCount++;
-
-        let overlayCoord = 'W-w-24:H-h-24';
-        if (logoPosition === 'bottom-left') overlayCoord = '24:H-h-24';
-        else if (logoPosition === 'top-right') overlayCoord = 'W-w-24:24';
-        else if (logoPosition === 'top-left') overlayCoord = '24:24';
-        else if (logoPosition === 'center') overlayCoord = '(W-w)/2:(H-h)/2';
-
-        const safeWidth = Math.max(60, Math.min(600, parseInt(logoWidth, 10) || 160));
-        filterParts.push(
-          `[${logoIndex}:v]scale=${safeWidth}:-1[scaled_logo];[${finalVideoStream}][scaled_logo]overlay=${overlayCoord}[final_with_logo]`
-        );
-        finalVideoStream = 'final_with_logo';
-      }
 
       const scriptPath = path.join(tempDir, 'filter_graph.txt');
       fs.writeFileSync(scriptPath, filterParts.join(';\n'), 'utf8');
