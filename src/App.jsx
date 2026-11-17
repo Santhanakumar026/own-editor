@@ -28,7 +28,7 @@ export default function App() {
   // CapCut Effects & Watermark Settings (Default OFF as per user preference)
   const [removeWatermark, setRemoveWatermark] = useState(false);
   const [watermarkMode, setWatermarkMode] = useState('crop');
-  const [transitionDuration, setTransitionDuration] = useState(0.5);
+  const [transitionDuration, setTransitionDuration] = useState(0.8);
 
   // Custom Brand Logo / Watermark Cover
   const [logoFile, setLogoFile] = useState(null);

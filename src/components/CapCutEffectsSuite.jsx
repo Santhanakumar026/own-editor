@@ -517,9 +517,10 @@ export default function CapCutEffectsSuite({
                   fontSize: '11px',
                 }}
               >
-                <option value={0.3}>0.3s (Fast)</option>
-                <option value={0.5}>0.5s (Smooth)</option>
-                <option value={0.8}>0.8s (Cinematic)</option>
+                <option value={0.5}>0.5s (Standard)</option>
+                <option value={0.8}>0.8s (Smooth)</option>
+                <option value={1.0}>1.0s (Ultra Smooth)</option>
+                <option value={1.2}>1.2s (Cinematic Slow)</option>
               </select>
             </div>
           </div>
