@@ -3,6 +3,7 @@ import AudioUploader from './components/AudioUploader';
 import ImageUploader from './components/ImageUploader';
 import TimestampEditor from './components/TimestampEditor';
 import TimelineVisualizer from './components/TimelineVisualizer';
+import CapCutEffectsSuite from './components/CapCutEffectsSuite';
 import VideoPreview from './components/VideoPreview';
 import { buildTimelineFromImages, naturalSortFiles } from './utils/filenameParser';
 
@@ -24,6 +25,11 @@ export default function App() {
   const [aspectRatio, setAspectRatio] = useState('16:9'); // '16:9' | '9:16' | '1:1'
   const [backgroundMode, setBackgroundMode] = useState('blur'); // 'blur' | 'black'
 
+  // CapCut Effects & Watermark Settings
+  const [removeWatermark, setRemoveWatermark] = useState(true);
+  const [watermarkMode, setWatermarkMode] = useState('crop');
+  const [transitionDuration, setTransitionDuration] = useState(0.5);
+
   const [isRendering, setIsRendering] = useState(false);
   const [progress, setProgress] = useState({ percent: 0 });
   const [renderError, setRenderError] = useState(null);
@@ -38,6 +44,11 @@ export default function App() {
       .catch(() => setBackendOnline(false));
   }, []);
 
+  const handleUpdateClips = (newClips) => {
+    setClips(newClips);
+    setJsonText(JSON.stringify(newClips, null, 2));
+  };
+
   /**
    * AUTOMATIC SYNCHRONIZATION ENGINE
    * Evaluates uploaded images and audio duration.
@@ -50,8 +61,15 @@ export default function App() {
       currentImages,
       currentAudioDur
     );
-    setClips(calculatedClips);
-    setJsonText(JSON.stringify(calculatedClips, null, 2));
+    setClips((prevClips) => {
+      const merged = calculatedClips.map((c, i) => ({
+        ...c,
+        motion: prevClips[i]?.motion || c.motion || 'none',
+        transition: prevClips[i]?.transition || c.transition || 'none',
+      }));
+      setJsonText(JSON.stringify(merged, null, 2));
+      return merged;
+    });
     setAutoSyncStatus(calculatedStatus);
   };
 
@@ -128,10 +146,15 @@ export default function App() {
       imageName: c.imageName,
       start: c.start,
       end: c.end,
+      motion: c.motion || 'none',
+      transition: c.transition || 'none',
     }));
     formData.append('timeline', JSON.stringify(payloadTimeline));
     formData.append('aspectRatio', aspectRatio);
     formData.append('backgroundMode', backgroundMode);
+    formData.append('removeWatermark', String(removeWatermark));
+    formData.append('watermarkMode', watermarkMode);
+    formData.append('transitionDuration', String(transitionDuration));
 
     try {
       const response = await fetch(`${API_BASE}/render`, {
@@ -413,6 +436,20 @@ export default function App() {
         </div>
       </div>
 
+      {/* CapCut Effects Suite: 1-Click Transitions, Motion Keyframes & Watermark Remover */}
+      {images.length > 0 && (
+        <CapCutEffectsSuite
+          clips={clips}
+          onUpdateClips={handleUpdateClips}
+          removeWatermark={removeWatermark}
+          onToggleRemoveWatermark={setRemoveWatermark}
+          watermarkMode={watermarkMode}
+          onChangeWatermarkMode={setWatermarkMode}
+          transitionDuration={transitionDuration}
+          onChangeTransitionDuration={setTransitionDuration}
+        />
+      )}
+
       {/* Visual Timeline Track */}
       {clips.length > 0 && (
         <TimelineVisualizer
@@ -442,7 +479,7 @@ export default function App() {
             clips={clips}
             images={images}
             audioDuration={audioDuration}
-            onClipsChange={setClips}
+            onClipsChange={handleUpdateClips}
             jsonText={jsonText}
             onJsonTextChange={setJsonText}
           />

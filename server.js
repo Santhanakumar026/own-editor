@@ -136,6 +136,9 @@ app.post('/api/render', upload.any(), async (req, res, next) => {
     let rawTimeline = req.body?.timeline;
     const aspectRatio = req.body?.aspectRatio || '16:9';
     const backgroundMode = req.body?.backgroundMode || 'blur';
+    const removeWatermark = req.body?.removeWatermark === 'true' || req.body?.removeWatermark === true;
+    const watermarkMode = req.body?.watermarkMode || 'crop';
+    const transitionDuration = parseFloat(req.body?.transitionDuration) || 0.5;
 
     if (!imageFiles || imageFiles.length === 0) {
       return res.status(400).json({ success: false, error: 'At least one image is required.' });
@@ -181,6 +184,9 @@ app.post('/api/render', upload.any(), async (req, res, next) => {
       totalDuration: totalVideoDuration,
       aspectRatio,
       backgroundMode,
+      removeWatermark,
+      watermarkMode,
+      transitionDuration,
       warnings: timelineResult.warnings,
       summary: timelineResult.summary,
       outputFilePath,
@@ -204,11 +210,15 @@ app.post('/api/render', upload.any(), async (req, res, next) => {
     // Execute render in background
     renderVideo({
       concatFilePath: timelineResult.concatFilePath,
+      clips: timelineResult.clips,
       audioFilePath: audioFile ? audioFile.path : null,
       outputFilePath,
       totalDuration: totalVideoDuration,
       aspectRatio,
       backgroundMode,
+      removeWatermark,
+      watermarkMode,
+      transitionDuration,
       onProgress: (progressInfo) => {
         const currentJob = jobs.get(jobId);
         if (currentJob) {

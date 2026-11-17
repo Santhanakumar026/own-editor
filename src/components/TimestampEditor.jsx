@@ -159,12 +159,14 @@ export default function TimestampEditor({
             <table className="timeline-table">
               <thead>
                 <tr>
-                  <th style={{ width: '60px' }}>Clip</th>
+                  <th style={{ width: '50px' }}>Clip</th>
                   <th>Image Asset</th>
-                  <th style={{ width: '120px' }}>Start Time (s)</th>
-                  <th style={{ width: '120px' }}>End Time (s)</th>
-                  <th style={{ width: '100px' }}>Duration</th>
-                  <th style={{ width: '60px' }}>Action</th>
+                  <th style={{ width: '100px' }}>Start (s)</th>
+                  <th style={{ width: '100px' }}>End (s)</th>
+                  <th style={{ width: '80px' }}>Duration</th>
+                  <th style={{ width: '120px' }}>Motion (FX)</th>
+                  <th style={{ width: '130px' }}>Transition</th>
+                  <th style={{ width: '50px' }}>Action</th>
                 </tr>
               </thead>
               <tbody>
@@ -194,12 +196,12 @@ export default function TimestampEditor({
                               padding: '6px 10px',
                               fontSize: '12px',
                               width: '100%',
-                              maxWidth: '260px',
+                              maxWidth: '220px',
                             }}
                           >
                             {images.map((img, imgIdx) => (
                               <option key={imgIdx} value={imgIdx}>
-                                #{imgIdx}: {img.name}
+                                #{imgIdx + 1}: {img.name}
                               </option>
                             ))}
                           </select>
@@ -213,7 +215,7 @@ export default function TimestampEditor({
                               updateFromVisual(next);
                             }}
                             className="input-time"
-                            style={{ width: '100%', maxWidth: '240px', textAlign: 'left' }}
+                            style={{ width: '100%', maxWidth: '200px', textAlign: 'left' }}
                             placeholder="e.g. intro.png"
                           />
                         )}
@@ -226,6 +228,7 @@ export default function TimestampEditor({
                           value={clip.start}
                           onChange={(e) => updateClipField(idx, 'start', e.target.value)}
                           className="input-time"
+                          style={{ width: '80px' }}
                         />
                       </td>
                       <td>
@@ -237,6 +240,7 @@ export default function TimestampEditor({
                           onChange={(e) => updateClipField(idx, 'end', e.target.value)}
                           className="input-time"
                           style={{
+                            width: '80px',
                             borderColor: isInvalid ? 'var(--accent-rose)' : 'var(--border-subtle)',
                           }}
                         />
@@ -252,6 +256,65 @@ export default function TimestampEditor({
                         >
                           {isInvalid ? 'Invalid' : `${duration}s`}
                         </span>
+                      </td>
+                      <td>
+                        <select
+                          value={clip.motion || 'none'}
+                          onChange={(e) => {
+                            const next = [...clips];
+                            next[idx] = { ...next[idx], motion: e.target.value };
+                            updateFromVisual(next);
+                          }}
+                          style={{
+                            background: '#0f172a',
+                            color: clip.motion && clip.motion !== 'none' ? '#c084fc' : '#94a3b8',
+                            border: '1px solid var(--border-subtle)',
+                            borderRadius: '6px',
+                            padding: '4px 6px',
+                            fontSize: '11px',
+                            fontWeight: '600',
+                            width: '110px',
+                          }}
+                        >
+                          <option value="none">None (Static)</option>
+                          <option value="zoomin">Zoom In 🔍</option>
+                          <option value="zoomout">Zoom Out 🔎</option>
+                          <option value="panleft">Pan Left ↔️</option>
+                          <option value="panright">Pan Right ↔️</option>
+                        </select>
+                      </td>
+                      <td>
+                        {idx < clips.length - 1 ? (
+                          <select
+                            value={clip.transition || 'none'}
+                            onChange={(e) => {
+                              const next = [...clips];
+                              next[idx] = { ...next[idx], transition: e.target.value };
+                              updateFromVisual(next);
+                            }}
+                            style={{
+                              background: '#0f172a',
+                              color: clip.transition && clip.transition !== 'none' ? '#38bdf8' : '#94a3b8',
+                              border: '1px solid var(--border-subtle)',
+                              borderRadius: '6px',
+                              padding: '4px 6px',
+                              fontSize: '11px',
+                              fontWeight: '600',
+                              width: '120px',
+                            }}
+                          >
+                            <option value="none">None (Cut)</option>
+                            <option value="slideleft">Slide Left 🎬</option>
+                            <option value="slideright">Slide Right 🎬</option>
+                            <option value="circlecrop">Circle Crop ⭕</option>
+                            <option value="wipeleft">Wipe Left 🌊</option>
+                            <option value="smoothleft">Smooth Left ✨</option>
+                            <option value="fadewhite">Flash White ⚡</option>
+                            <option value="fade">Dissolve Fade 🌫️</option>
+                          </select>
+                        ) : (
+                          <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>End</span>
+                        )}
                       </td>
                       <td>
                         <button

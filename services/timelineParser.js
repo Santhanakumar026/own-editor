@@ -272,6 +272,8 @@ function parseAndGenerateTimeline(uploadedImages, rawTimeline, audioDuration, pr
       start: Number(start.toFixed(3)),
       end: Number(end.toFixed(3)),
       duration: Number(duration.toFixed(3)),
+      motion: raw.motion || 'none',
+      transition: raw.transition || 'none',
     });
   }
 
@@ -298,6 +300,8 @@ function parseAndGenerateTimeline(uploadedImages, rawTimeline, audioDuration, pr
           start: currentTime,
           end: clip.start,
           duration: gapDuration,
+          motion: 'none',
+          transition: 'none',
         });
       } else {
         const prev = normalizedClips[normalizedClips.length - 1];
@@ -307,6 +311,8 @@ function parseAndGenerateTimeline(uploadedImages, rawTimeline, audioDuration, pr
           start: currentTime,
           end: clip.start,
           duration: gapDuration,
+          motion: 'none',
+          transition: 'none',
         });
       }
       currentTime = clip.start;
@@ -318,6 +324,8 @@ function parseAndGenerateTimeline(uploadedImages, rawTimeline, audioDuration, pr
       start: currentTime,
       end: Number((currentTime + clip.duration).toFixed(3)),
       duration: clip.duration,
+      motion: clip.motion || 'none',
+      transition: clip.transition || 'none',
     });
     currentTime = Number((currentTime + clip.duration).toFixed(3));
   }

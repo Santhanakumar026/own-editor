@@ -134,6 +134,8 @@ export function buildTimelineFromImages(images, audioDuration) {
           imageName: item.name,
           start: Number(start.toFixed(2)),
           end: Number(end.toFixed(2)),
+          motion: 'none',
+          transition: 'none',
         };
       });
 
@@ -170,6 +172,8 @@ export function buildTimelineFromImages(images, audioDuration) {
             imageName: item.name,
             start: Number(start.toFixed(2)),
             end: Number(end.toFixed(2)),
+            motion: 'none',
+            transition: 'none',
           };
         });
       } else {
@@ -192,6 +196,8 @@ export function buildTimelineFromImages(images, audioDuration) {
             imageName: item.name,
             start: Number(start.toFixed(2)),
             end: Number(end.toFixed(2)),
+            motion: 'none',
+            transition: 'none',
           };
         });
       }
@@ -220,6 +226,8 @@ export function buildTimelineFromImages(images, audioDuration) {
       imageName: img.name,
       start,
       end,
+      motion: 'none',
+      transition: 'none',
     };
   });
 

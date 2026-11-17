@@ -7,6 +7,10 @@ frontend/dist/
 dist/
 
 # Backend uploads and rendered outputs
+uploads/*
+!uploads/.gitkeep
+outputs/*
+!outputs/.gitkeep
 backend/uploads/*
 !backend/uploads/.gitkeep
 backend/outputs/*
