@@ -118,7 +118,7 @@ app.post('/api/render', upload.any(), async (req, res, next) => {
   try {
     const allFiles = req.files || [];
 
-    // Separate audio and images automatically by mimetype or extension
+    // Separate audio, logo, and images automatically by fieldname, mimetype, or extension
     const audioFiles = allFiles.filter(
       (f) =>
         f.fieldname === 'audio' ||
@@ -126,11 +126,19 @@ app.post('/api/render', upload.any(), async (req, res, next) => {
         /\.(mp3|wav|m4a|aac|ogg|flac)$/i.test(f.originalname)
     );
 
+    const logoFiles = allFiles.filter(
+      (f) => f.fieldname === 'logo' || f.fieldname === 'logoFile'
+    );
+    const logoFile = logoFiles.length > 0 ? logoFiles[0] : null;
+
     const imageFiles = allFiles.filter(
       (f) =>
-        f.fieldname === 'images' ||
-        f.mimetype.startsWith('image/') ||
-        /\.(png|jpe?g|webp|bmp|gif|tiff)$/i.test(f.originalname)
+        f.fieldname !== 'logo' &&
+        f.fieldname !== 'logoFile' &&
+        f.fieldname !== 'audio' &&
+        (f.fieldname === 'images' ||
+          f.mimetype.startsWith('image/') ||
+          /\.(png|jpe?g|webp|bmp|gif|tiff)$/i.test(f.originalname))
     );
 
     let rawTimeline = req.body?.timeline;
@@ -138,6 +146,8 @@ app.post('/api/render', upload.any(), async (req, res, next) => {
     const backgroundMode = req.body?.backgroundMode || 'blur';
     const removeWatermark = req.body?.removeWatermark === 'true' || req.body?.removeWatermark === true;
     const watermarkMode = req.body?.watermarkMode || 'crop';
+    const logoPosition = req.body?.logoPosition || 'bottom-right';
+    const logoWidth = parseInt(req.body?.logoWidth, 10) || 160;
     const transitionDuration = parseFloat(req.body?.transitionDuration) || 0.5;
 
     if (!imageFiles || imageFiles.length === 0) {
@@ -218,6 +228,9 @@ app.post('/api/render', upload.any(), async (req, res, next) => {
       backgroundMode,
       removeWatermark,
       watermarkMode,
+      logoFilePath: logoFile ? logoFile.path : null,
+      logoPosition,
+      logoWidth,
       transitionDuration,
       onProgress: (progressInfo) => {
         const currentJob = jobs.get(jobId);

@@ -133,6 +133,9 @@ function renderVideo({
   removeWatermark = false,
   watermarkMode = 'crop',
   watermarkPosition = 'bottom-right',
+  logoFilePath = null,
+  logoPosition = 'bottom-right',
+  logoWidth = 160,
   transitionDuration = 0.5,
   onProgress,
 }) {
@@ -148,9 +151,10 @@ function renderVideo({
       height = 1080;
     }
 
-    // Check if motion keyframes, transitions, or watermark removal are active
+    // Check if motion keyframes, transitions, watermark removal, or logo overlay are active
     const hasEffects =
       Boolean(removeWatermark) ||
+      Boolean(logoFilePath) ||
       (clips &&
         clips.length > 0 &&
         clips.some(
@@ -191,10 +195,11 @@ function renderVideo({
       }
 
       // Watermark filter prefix:
-      // In Google Flow, watermark is at bottom-right corner.
-      // Scaling up by 4.5% gently trims the outer watermark margin cleanly with ZERO blur artifacts.
+      // If user uploaded a brand logo, the logo will directly cover the watermark in its fixed location,
+      // so images remain 100% full uncropped resolution.
+      // If no logo is uploaded, we apply smart clean re-frame or delogo.
       let wmFilter = '';
-      if (removeWatermark) {
+      if (!logoFilePath && removeWatermark) {
         if (watermarkMode === 'delogo') {
           // Blur the bottom-right corner box
           wmFilter = `delogo=x=W-170:y=H-70:w=160:h=60:band=1,`;
@@ -217,13 +222,18 @@ function renderVideo({
         const motion = clip.motion || 'none';
 
         if (motion === 'zoomin') {
-          motionFilter = `zoompan=z='min(zoom+0.0018,1.22)':d=${totalFrames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${width}x${height}:fps=30`;
+          // Butter-smooth Ken Burns: upscale to 2880px to eliminate sub-pixel integer snapping (FFmpeg bug #4298)
+          // and use linear continuous on/totalFrames for 100% vibration-free zoom
+          motionFilter = `scale=2880:2880:force_original_aspect_ratio=increase:flags=bicubic,zoompan=z='1.0+0.18*(on/${totalFrames})':d=${totalFrames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${width}x${height}:fps=30`;
         } else if (motion === 'zoomout') {
-          motionFilter = `zoompan=z='if(lte(zoom,1.0),1.22,max(1.001,zoom-0.0018))':d=${totalFrames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${width}x${height}:fps=30`;
+          // Silky smooth zoom out from 1.18 to 1.0 with zero jitter
+          motionFilter = `scale=2880:2880:force_original_aspect_ratio=increase:flags=bicubic,zoompan=z='1.18-0.18*(on/${totalFrames})':d=${totalFrames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${width}x${height}:fps=30`;
         } else if (motion === 'panleft') {
-          motionFilter = `zoompan=z=1.12:d=${totalFrames}:x='if(lte(on,1),(iw-iw/zoom)/2,x+1)':y='(ih-ih/zoom)/2':s=${width}x${height}:fps=30`;
+          // Smooth glide from right to left across clip duration
+          motionFilter = `scale=2880:2880:force_original_aspect_ratio=increase:flags=bicubic,zoompan=z=1.15:d=${totalFrames}:x='(iw-iw/zoom)*(1-on/${totalFrames})':y='(ih-ih/zoom)/2':s=${width}x${height}:fps=30`;
         } else if (motion === 'panright') {
-          motionFilter = `zoompan=z=1.12:d=${totalFrames}:x='if(lte(on,1),(iw-iw/zoom)/2,x-1)':y='(ih-ih/zoom)/2':s=${width}x${height}:fps=30`;
+          // Smooth glide from left to right across clip duration
+          motionFilter = `scale=2880:2880:force_original_aspect_ratio=increase:flags=bicubic,zoompan=z=1.15:d=${totalFrames}:x='(iw-iw/zoom)*(on/${totalFrames})':y='(ih-ih/zoom)/2':s=${width}x${height}:fps=30`;
         } else {
           // Static fit with aspect ratio
           if (backgroundMode === 'blur') {
@@ -271,6 +281,30 @@ function renderVideo({
           }
           finalVideoStream = 'finalv';
         }
+      }
+
+      // 5. Fixed Brand Logo / Watermark Cover Overlay
+      // Permanently overlays the user's logo at the watermark location across the entire video
+      if (logoFilePath) {
+        const logoIndex = inputs.length / 2;
+        inputs.push('-i', logoFilePath);
+
+        let overlayCoord = 'W-w-24:H-h-24'; // default: bottom-right (Google Flow watermark location)
+        if (logoPosition === 'bottom-left') {
+          overlayCoord = '24:H-h-24';
+        } else if (logoPosition === 'top-right') {
+          overlayCoord = 'W-w-24:24';
+        } else if (logoPosition === 'top-left') {
+          overlayCoord = '24:24';
+        } else if (logoPosition === 'center') {
+          overlayCoord = '(W-w)/2:(H-h)/2';
+        }
+
+        const safeWidth = Math.max(60, Math.min(600, parseInt(logoWidth, 10) || 160));
+        filterParts.push(
+          `[${logoIndex}:v]scale=${safeWidth}:-1[scaled_logo];[${finalVideoStream}][scaled_logo]overlay=${overlayCoord}[final_with_logo]`
+        );
+        finalVideoStream = 'final_with_logo';
       }
 
       const filterComplexString = filterParts.join(';\n');

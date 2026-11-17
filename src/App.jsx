@@ -30,6 +30,12 @@ export default function App() {
   const [watermarkMode, setWatermarkMode] = useState('crop');
   const [transitionDuration, setTransitionDuration] = useState(0.5);
 
+  // Custom Brand Logo / Watermark Cover
+  const [logoFile, setLogoFile] = useState(null);
+  const [logoPreviewUrl, setLogoPreviewUrl] = useState(null);
+  const [logoPosition, setLogoPosition] = useState('bottom-right');
+  const [logoWidth, setLogoWidth] = useState(160);
+
   const [isRendering, setIsRendering] = useState(false);
   const [progress, setProgress] = useState({ percent: 0 });
   const [renderError, setRenderError] = useState(null);
@@ -47,6 +53,18 @@ export default function App() {
   const handleUpdateClips = (newClips) => {
     setClips(newClips);
     setJsonText(JSON.stringify(newClips, null, 2));
+  };
+
+  const handleLogoChange = (file) => {
+    if (!file) {
+      setLogoFile(null);
+      if (logoPreviewUrl) URL.revokeObjectURL(logoPreviewUrl);
+      setLogoPreviewUrl(null);
+      return;
+    }
+    setLogoFile(file);
+    const url = URL.createObjectURL(file);
+    setLogoPreviewUrl(url);
   };
 
   /**
@@ -155,6 +173,12 @@ export default function App() {
     formData.append('removeWatermark', String(removeWatermark));
     formData.append('watermarkMode', watermarkMode);
     formData.append('transitionDuration', String(transitionDuration));
+
+    if (logoFile) {
+      formData.append('logo', logoFile);
+      formData.append('logoPosition', logoPosition);
+      formData.append('logoWidth', String(logoWidth));
+    }
 
     try {
       const response = await fetch(`${API_BASE}/render`, {
@@ -445,6 +469,13 @@ export default function App() {
           onToggleRemoveWatermark={setRemoveWatermark}
           watermarkMode={watermarkMode}
           onChangeWatermarkMode={setWatermarkMode}
+          logoFile={logoFile}
+          logoPreviewUrl={logoPreviewUrl}
+          onLogoChange={handleLogoChange}
+          logoPosition={logoPosition}
+          onChangeLogoPosition={setLogoPosition}
+          logoWidth={logoWidth}
+          onChangeLogoWidth={setLogoWidth}
           transitionDuration={transitionDuration}
           onChangeTransitionDuration={setTransitionDuration}
         />

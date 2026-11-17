@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useRef } from 'react';
 
 const CAPCUT_TRANSITION_LIST = [
   'slideleft',
@@ -24,9 +24,18 @@ export default function CapCutEffectsSuite({
   onToggleRemoveWatermark,
   watermarkMode,
   onChangeWatermarkMode,
-  transitionDuration,
+  logoFile,
+  logoPreviewUrl,
+  onLogoChange,
+  logoPosition = 'bottom-right',
+  onChangeLogoPosition,
+  logoWidth = 160,
+  onChangeLogoWidth,
+  transitionDuration = 0.5,
   onChangeTransitionDuration,
 }) {
+  const fileInputRef = useRef(null);
+
   /**
    * 1-Click CapCut Magic:
    * Randomly assigns Zoom In / Zoom Out / Pan to every image,
@@ -104,7 +113,7 @@ export default function CapCutEffectsSuite({
       style={{
         marginTop: '20px',
         border: '1px solid rgba(139, 92, 246, 0.35)',
-        background: 'linear-gradient(145deg, rgba(23, 23, 35, 0.8), rgba(30, 20, 48, 0.85))',
+        background: 'linear-gradient(145deg, rgba(23, 23, 35, 0.85), rgba(30, 20, 48, 0.9))',
         boxShadow: '0 8px 32px rgba(139, 92, 246, 0.15)',
       }}
     >
@@ -133,10 +142,10 @@ export default function CapCutEffectsSuite({
           </span>
           <div>
             <h3 style={{ margin: 0, fontSize: '16px', color: '#fff', fontWeight: '700' }}>
-              4 CapCut Effects & Google Flow Suite
+              4 CapCut Effects & Watermark / Logo Suite
             </h3>
             <p style={{ margin: 0, fontSize: '12.5px', color: 'var(--text-secondary)' }}>
-              1-Click dynamic camera motion, randomized transitions & instant watermark removal
+              1-Click dynamic camera motion, randomized transitions & brand logo watermark cover
             </p>
           </div>
         </div>
@@ -168,72 +177,241 @@ export default function CapCutEffectsSuite({
         </button>
       </div>
 
-      {/* Grid of 3 controls: Watermark, Motion, Transitions */}
+      {/* Grid of 3 controls: Logo/Watermark, Motion, Transitions */}
       <div
         style={{
           display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))',
           gap: '16px',
           marginTop: '12px',
         }}
       >
-        {/* CONTROL 1: Google Flow Watermark Remover */}
+        {/* CONTROL 1: Brand Logo & Watermark Cover */}
         <div
           style={{
             padding: '14px',
             borderRadius: '10px',
-            background: removeWatermark
+            background: logoFile
+              ? 'rgba(16, 185, 129, 0.12)'
+              : removeWatermark
               ? 'rgba(16, 185, 129, 0.08)'
               : 'rgba(255, 255, 255, 0.03)',
-            border: removeWatermark
-              ? '1px solid rgba(16, 185, 129, 0.35)'
+            border: logoFile || removeWatermark
+              ? '1px solid rgba(16, 185, 129, 0.4)'
               : '1px solid var(--border-color)',
             transition: 'all 0.2s ease',
           }}
         >
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <strong style={{ fontSize: '13.5px', color: '#fff', display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <span>🛡️</span> Google Flow Watermark
+              <span>🏷️</span> Logo / Watermark Cover
             </strong>
-            <button
-              type="button"
-              onClick={() => onToggleRemoveWatermark(!removeWatermark)}
+            <span
               style={{
-                padding: '4px 12px',
-                borderRadius: '20px',
-                fontSize: '12px',
-                fontWeight: '700',
-                border: 'none',
-                cursor: 'pointer',
-                background: removeWatermark ? '#10b981' : '#475569',
-                color: '#fff',
+                fontSize: '11px',
+                padding: '2px 8px',
+                borderRadius: '12px',
+                background: logoFile ? 'rgba(16, 185, 129, 0.25)' : 'rgba(255, 255, 255, 0.1)',
+                color: logoFile ? '#34d399' : 'var(--text-secondary)',
+                fontWeight: '600',
               }}
             >
-              {removeWatermark ? '✓ REMOVER ON' : 'OFF'}
-            </button>
+              {logoFile ? '✓ Logo Covering Watermark' : 'Cover Options'}
+            </span>
           </div>
+
           <p style={{ fontSize: '11.5px', color: 'var(--text-secondary)', margin: '8px 0 10px' }}>
-            Removes the Google Flow watermark from the exact corner across all images.
+            Place your channel logo fixed over the Google Flow watermark across the entire video.
           </p>
 
-          {removeWatermark && (
-            <div style={{ display: 'flex', gap: '8px' }}>
+          {/* Logo Uploader / Preview Box */}
+          {logoFile ? (
+            <div
+              style={{
+                background: 'rgba(0, 0, 0, 0.4)',
+                border: '1px dashed #10b981',
+                borderRadius: '8px',
+                padding: '10px',
+                marginBottom: '10px',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  {logoPreviewUrl && (
+                    <img
+                      src={logoPreviewUrl}
+                      alt="Brand Logo"
+                      style={{
+                        height: '36px',
+                        maxWidth: '90px',
+                        objectFit: 'contain',
+                        borderRadius: '4px',
+                        background: 'rgba(255, 255, 255, 0.05)',
+                        border: '1px solid rgba(255, 255, 255, 0.1)',
+                        padding: '2px',
+                      }}
+                    />
+                  )}
+                  <div>
+                    <div style={{ fontSize: '12px', color: '#fff', fontWeight: '600', maxWidth: '140px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {logoFile.name}
+                    </div>
+                    <div style={{ fontSize: '10.5px', color: '#34d399' }}>
+                      Fixed over watermark location
+                    </div>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => onLogoChange(null)}
+                  style={{
+                    background: 'rgba(239, 68, 68, 0.2)',
+                    border: '1px solid rgba(239, 68, 68, 0.4)',
+                    color: '#f87171',
+                    borderRadius: '6px',
+                    padding: '4px 8px',
+                    fontSize: '11px',
+                    cursor: 'pointer',
+                  }}
+                  title="Remove logo"
+                >
+                  ✕ Remove
+                </button>
+              </div>
+
+              {/* Position & Size Adjusters */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', marginTop: '10px' }}>
+                <div>
+                  <label style={{ fontSize: '10.5px', color: 'var(--text-secondary)', display: 'block', marginBottom: '2px' }}>
+                    Position
+                  </label>
+                  <select
+                    value={logoPosition}
+                    onChange={(e) => onChangeLogoPosition(e.target.value)}
+                    style={{
+                      width: '100%',
+                      background: '#0f172a',
+                      color: '#fff',
+                      border: '1px solid var(--border-color)',
+                      borderRadius: '4px',
+                      padding: '4px 6px',
+                      fontSize: '11px',
+                    }}
+                  >
+                    <option value="bottom-right">Bottom-Right (Google Flow)</option>
+                    <option value="bottom-left">Bottom-Left</option>
+                    <option value="top-right">Top-Right</option>
+                    <option value="top-left">Top-Left</option>
+                    <option value="center">Center</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label style={{ fontSize: '10.5px', color: 'var(--text-secondary)', display: 'block', marginBottom: '2px' }}>
+                    Logo Size
+                  </label>
+                  <select
+                    value={logoWidth}
+                    onChange={(e) => onChangeLogoWidth(parseInt(e.target.value, 10))}
+                    style={{
+                      width: '100%',
+                      background: '#0f172a',
+                      color: '#fff',
+                      border: '1px solid var(--border-color)',
+                      borderRadius: '4px',
+                      padding: '4px 6px',
+                      fontSize: '11px',
+                    }}
+                  >
+                    <option value={130}>Compact (130px)</option>
+                    <option value={160}>Watermark Size (160px)</option>
+                    <option value={200}>Prominent (200px)</option>
+                    <option value={250}>Large (250px)</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/png,image/jpeg,image/webp,image/svg+xml"
+                style={{ display: 'none' }}
+                onChange={(e) => {
+                  if (e.target.files && e.target.files[0]) {
+                    onLogoChange(e.target.files[0]);
+                  }
+                }}
+              />
               <button
                 type="button"
-                className={`tab-btn ${watermarkMode === 'crop' ? 'active' : ''}`}
-                style={{ fontSize: '11px', padding: '5px 10px', flex: 1 }}
-                onClick={() => onChangeWatermarkMode('crop')}
+                onClick={() => fileInputRef.current?.click()}
+                style={{
+                  width: '100%',
+                  padding: '7px 10px',
+                  borderRadius: '6px',
+                  border: '1px dashed #10b981',
+                  background: 'rgba(16, 185, 129, 0.1)',
+                  color: '#34d399',
+                  fontWeight: '600',
+                  fontSize: '12px',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '6px',
+                  marginBottom: '8px',
+                }}
               >
-                ✨ Clean Re-Frame (100% Invisible)
+                <span>➕</span>
+                <span>Upload Logo to Cover Watermark</span>
               </button>
-              <button
-                type="button"
-                className={`tab-btn ${watermarkMode === 'delogo' ? 'active' : ''}`}
-                style={{ fontSize: '11px', padding: '5px 10px', flex: 1 }}
-                onClick={() => onChangeWatermarkMode('delogo')}
-              >
-                🌫️ Inpaint Delogo
-              </button>
+
+              {/* Fallback Watermark Mode if No Logo */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '6px' }}>
+                <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
+                  Or use Auto Watermark Filter:
+                </span>
+                <button
+                  type="button"
+                  onClick={() => onToggleRemoveWatermark(!removeWatermark)}
+                  style={{
+                    padding: '2px 8px',
+                    borderRadius: '12px',
+                    fontSize: '10.5px',
+                    fontWeight: '700',
+                    border: 'none',
+                    cursor: 'pointer',
+                    background: removeWatermark ? '#10b981' : '#475569',
+                    color: '#fff',
+                  }}
+                >
+                  {removeWatermark ? 'ON' : 'OFF'}
+                </button>
+              </div>
+
+              {removeWatermark && (
+                <div style={{ display: 'flex', gap: '6px', marginTop: '6px' }}>
+                  <button
+                    type="button"
+                    className={`tab-btn ${watermarkMode === 'crop' ? 'active' : ''}`}
+                    style={{ fontSize: '10.5px', padding: '4px 6px', flex: 1 }}
+                    onClick={() => onChangeWatermarkMode('crop')}
+                  >
+                    ✨ Clean Re-Frame
+                  </button>
+                  <button
+                    type="button"
+                    className={`tab-btn ${watermarkMode === 'delogo' ? 'active' : ''}`}
+                    style={{ fontSize: '10.5px', padding: '4px 6px', flex: 1 }}
+                    onClick={() => onChangeWatermarkMode('delogo')}
+                  >
+                    🌫️ Inpaint Delogo
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -252,7 +430,7 @@ export default function CapCutEffectsSuite({
         >
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <strong style={{ fontSize: '13.5px', color: '#fff', display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <span>🔍</span> Image Motion (Keyframes)
+              <span>🔍</span> Smooth Motion (Keyframes)
             </strong>
             <span
               style={{
@@ -261,11 +439,11 @@ export default function CapCutEffectsSuite({
                 fontWeight: '600',
               }}
             >
-              {hasMotion ? '✓ Motion Active' : 'Static'}
+              {hasMotion ? '✓ Smooth FX Active' : 'Static'}
             </span>
           </div>
           <p style={{ fontSize: '11.5px', color: 'var(--text-secondary)', margin: '8px 0 10px' }}>
-            Applies smooth Ken Burns camera zooms & pans to prevent flat static slides.
+            Silky-smooth Ken Burns zoom & pan. Upscaled to eliminate all vibration / micro-jitter.
           </p>
 
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
@@ -283,7 +461,7 @@ export default function CapCutEffectsSuite({
               style={{ fontSize: '11px', padding: '4px 8px' }}
               onClick={() => handleApplyMotionToAll('zoomin')}
             >
-              🔍 Zoom In
+              🔍 Smooth Zoom In
             </button>
             <button
               type="button"
@@ -291,7 +469,7 @@ export default function CapCutEffectsSuite({
               style={{ fontSize: '11px', padding: '4px 8px' }}
               onClick={() => handleApplyMotionToAll('zoomout')}
             >
-              🔎 Zoom Out
+              🔎 Smooth Zoom Out
             </button>
             <button
               type="button"
@@ -299,7 +477,7 @@ export default function CapCutEffectsSuite({
               style={{ fontSize: '11px', padding: '4px 8px' }}
               onClick={() => handleApplyMotionToAll('panleft')}
             >
-              ↔️ Pan
+              ↔️ Smooth Pan
             </button>
             <button
               type="button"
@@ -307,7 +485,7 @@ export default function CapCutEffectsSuite({
               style={{ fontSize: '11px', padding: '4px 8px', color: '#ef4444' }}
               onClick={() => handleApplyMotionToAll('none')}
             >
-              None
+              Static
             </button>
           </div>
         </div>
@@ -329,7 +507,7 @@ export default function CapCutEffectsSuite({
               <span>🎬</span> CapCut Transitions
             </strong>
             <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>Duration:</span>
+              <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>Speed:</span>
               <select
                 value={transitionDuration}
                 onChange={(e) => onChangeTransitionDuration(parseFloat(e.target.value))}
@@ -343,13 +521,13 @@ export default function CapCutEffectsSuite({
                 }}
               >
                 <option value={0.3}>0.3s (Fast)</option>
-                <option value={0.5}>0.5s (Std)</option>
-                <option value={0.8}>0.8s (Smooth)</option>
+                <option value={0.5}>0.5s (Smooth)</option>
+                <option value={0.8}>0.8s (Cinematic)</option>
               </select>
             </div>
           </div>
           <p style={{ fontSize: '11.5px', color: 'var(--text-secondary)', margin: '8px 0 10px' }}>
-            Randomizes or applies slide, wipe, circle crop, or flash transitions between cuts.
+            Smooth slide, wipe, circle crop, and dissolve transitions locked to audio timestamps.
           </p>
 
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
