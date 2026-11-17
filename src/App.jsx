@@ -25,8 +25,8 @@ export default function App() {
   const [aspectRatio, setAspectRatio] = useState('16:9'); // '16:9' | '9:16' | '1:1'
   const [backgroundMode, setBackgroundMode] = useState('blur'); // 'blur' | 'black'
 
-  // CapCut Effects & Watermark Settings
-  const [removeWatermark, setRemoveWatermark] = useState(true);
+  // CapCut Effects & Watermark Settings (Default OFF as per user preference)
+  const [removeWatermark, setRemoveWatermark] = useState(false);
   const [watermarkMode, setWatermarkMode] = useState('crop');
   const [transitionDuration, setTransitionDuration] = useState(0.5);
 

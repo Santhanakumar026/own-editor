@@ -131,30 +131,49 @@ function parseAndGenerateTimeline(uploadedImages, rawTimeline, audioDuration, pr
         return ta - tb;
       });
 
-      let cursor = 0;
-      entries = withTimestamps.map((item, i) => {
-        if (item.parsed.type === 'range') {
-          return {
-            imageIndex: item.idx,
-            imageName: item.img.originalname,
-            start: item.parsed.start,
-            end: item.parsed.end,
-          };
-        } else {
-          const start = cursor;
-          let end = item.parsed.time;
-          if (i === withTimestamps.length - 1 && audioDuration > end) {
-            end = audioDuration;
+      const firstIsZero = withTimestamps[0]?.parsed?.time === 0;
+      if (firstIsZero) {
+        entries = withTimestamps.map((item, idx) => {
+          const start = item.parsed.time;
+          let end;
+          if (idx < withTimestamps.length - 1) {
+            end = withTimestamps[idx + 1].parsed.time;
+          } else {
+            end = audioDuration > start ? audioDuration : start + 3.0;
           }
-          cursor = end;
           return {
             imageIndex: item.idx,
             imageName: item.img.originalname,
-            start,
-            end,
+            start: Number(start.toFixed(2)),
+            end: Number(end.toFixed(2)),
           };
-        }
-      });
+        });
+      } else {
+        let cursor = 0;
+        entries = withTimestamps.map((item, i) => {
+          if (item.parsed.type === 'range') {
+            return {
+              imageIndex: item.idx,
+              imageName: item.img.originalname,
+              start: item.parsed.start,
+              end: item.parsed.end,
+            };
+          } else {
+            const start = cursor;
+            let end = item.parsed.time;
+            if (i === withTimestamps.length - 1 && audioDuration > end) {
+              end = audioDuration;
+            }
+            cursor = end;
+            return {
+              imageIndex: item.idx,
+              imageName: item.img.originalname,
+              start,
+              end,
+            };
+          }
+        });
+      }
     } else {
       // Divide evenly across audio length
       const totalDur = audioDuration > 0 ? audioDuration : uploadedImages.length * 3.5;

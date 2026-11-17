@@ -62,9 +62,6 @@ export default function CapCutEffectsSuite({
     });
 
     onUpdateClips(updated);
-    if (!removeWatermark) {
-      onToggleRemoveWatermark(true);
-    }
   };
 
   /**

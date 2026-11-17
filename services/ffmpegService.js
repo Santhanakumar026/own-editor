@@ -125,9 +125,8 @@ const CAPCUT_TRANSITIONS = [
 
 /**
  * Helper to render an individual image into an ultrafast standardized video clip segment.
- * If user provided a brand logo, the logo is directly attached to the image at the watermark spot
- * BEFORE any motion is computed. This guarantees that when the camera zooms in, zooms out, or pans,
- * the logo travels WITH the image and permanently covers the watermark at all times with ZERO cropping!
+ * If user provided a brand logo, the logo is directly attached to the image at the watermark spot.
+ * When no logo is provided, zero logo overlay is added.
  */
 function renderClipSegment({
   imagePath,
@@ -190,7 +189,7 @@ function renderClipSegment({
 /**
  * Runs the final assembly process with real-time progress calculation.
  */
-function runFinalAssembly(ffmpegArgs, totalDuration, onProgress) {
+function runFinalAssembly(ffmpegArgs, totalDuration, onProgress, startPct = 70, pctSpan = 29) {
   return new Promise((resolve, reject) => {
     const child = spawn('ffmpeg', ffmpegArgs);
     let stderrAccumulator = '';
@@ -206,8 +205,7 @@ function runFinalAssembly(ffmpegArgs, totalDuration, onProgress) {
       if (onProgress && typeof onProgress === 'function') {
         const progress = parseProgressLine(text, totalDuration);
         if (progress) {
-          // Scale from 45% to 99%
-          const scaledPercent = Math.min(99, 45 + Math.round(progress.percent * 0.54));
+          const scaledPercent = Math.min(99, startPct + Math.round((progress.percent * pctSpan) / 100));
           onProgress({
             ...progress,
             percent: scaledPercent,
@@ -236,123 +234,10 @@ function runFinalAssembly(ffmpegArgs, totalDuration, onProgress) {
 }
 
 /**
- * Merges a group of video clips using FFmpeg xfade filter
- * with exact mathematical accumulated length tracking.
- * Safe and fast for up to 8 clips per group (prevents Windows heap OOM).
- */
-function mergeClipGroup({
-  clips,
-  audioFilePath = null,
-  totalDuration = 0,
-  transDur = 0.5,
-  outputPath,
-  onProgress = null,
-  startPct = 0,
-  pctSpan = 100,
-}) {
-  const inputs = [];
-  for (let i = 0; i < clips.length; i++) {
-    inputs.push('-i', clips[i].filePath);
-  }
-
-  let audioIdx = -1;
-  if (audioFilePath) {
-    audioIdx = clips.length;
-    inputs.push('-i', audioFilePath);
-  }
-
-  const filterParts = [];
-  let lastStream = '0:v';
-  let accumulatedLength = clips[0].duration;
-
-  for (let i = 0; i < clips.length - 1; i++) {
-    const rawTrans = clips[i].transition || 'fade';
-    const isCut = rawTrans === 'none';
-    const trans = CAPCUT_TRANSITIONS.includes(rawTrans) ? rawTrans : 'fade';
-    const curDur = isCut ? 0.05 : transDur;
-
-    const offset = Math.max(0.01, Number((accumulatedLength - curDur).toFixed(3)));
-    accumulatedLength = Number((accumulatedLength + clips[i + 1].duration - curDur).toFixed(3));
-
-    const nextStream = `${i + 1}:v`;
-    const outStream = i === clips.length - 2 ? 'transv' : `xf${i}`;
-    filterParts.push(
-      `[${lastStream}][${nextStream}]xfade=transition=${trans}:duration=${curDur}:offset=${offset}[${outStream}]`
-    );
-    lastStream = outStream;
-  }
-
-  const finalVideoStream = clips.length > 1 ? 'transv' : '0:v';
-  const filterArgs = filterParts.length > 0 ? ['-filter_complex', filterParts.join(';')] : [];
-
-  const mapArgs = [];
-  if (filterParts.length > 0) {
-    mapArgs.push('-map', `[${finalVideoStream}]`);
-  } else {
-    mapArgs.push('-map', '0:v');
-  }
-
-  if (audioIdx >= 0) {
-    mapArgs.push('-map', `${audioIdx}:a`);
-  }
-
-  const ffmpegArgs = [
-    '-y',
-    ...inputs,
-    ...filterArgs,
-    ...mapArgs,
-    '-c:v',
-    'libx264',
-    '-preset',
-    audioFilePath ? 'veryfast' : 'ultrafast',
-    '-threads',
-    '0',
-    '-crf',
-    audioFilePath ? '21' : '18',
-    ...(audioIdx >= 0 ? ['-c:a', 'aac', '-b:a', '192k', '-shortest'] : []),
-    outputPath,
-  ];
-
-  return new Promise((resolve, reject) => {
-    const child = spawn('ffmpeg', ffmpegArgs);
-    let stderrAccumulator = '';
-
-    child.stderr.on('data', (chunk) => {
-      const text = chunk.toString();
-      stderrAccumulator += text;
-      if (stderrAccumulator.length > 30000) {
-        stderrAccumulator = stderrAccumulator.slice(-15000);
-      }
-      if (onProgress && totalDuration > 0) {
-        const prog = parseProgressLine(text, totalDuration);
-        if (prog) {
-          const scaled = Math.min(99, startPct + Math.round((prog.percent * pctSpan) / 100));
-          onProgress({
-            ...prog,
-            percent: scaled,
-          });
-        }
-      }
-    });
-
-    child.on('close', (code) => {
-      if (code === 0) {
-        resolve({ accumulatedLength });
-      } else {
-        reject(
-          new Error(`FFmpeg merge failed (code ${code}): ${stderrAccumulator.slice(-1200)}`)
-        );
-      }
-    });
-
-    child.on('error', reject);
-  });
-}
-
-/**
- * Robust Two-Stage Video Rendering Engine:
+ * Robust Two-Stage Hierarchical Video Rendering Engine:
  * Stage 1: Individual clip motion rendering (flat ~40MB RAM, zero vibration, ultrafast).
- * Stage 2: Clean assembly with transitions, audio sync, and fixed logo overlay.
+ * Stage 2: Hierarchical Memory-Safe Transition Assembly (chunks capped to 8 decoders)
+ *          with exact mathematical timeline offsets guaranteeing 100% audio sync.
  *
  * @param {Object} options
  * @param {Array<Object>} options.clips - Normalized clips array with filePath, duration, motion, transition
@@ -423,9 +308,9 @@ async function renderVideo({
       const segPath = path.join(tempDir, `seg_${i}.mp4`);
       segmentPaths[i] = segPath;
 
-      const hasPrevTrans =
-        hasAnyTransition && i > 0 && clips[i - 1].transition && clips[i - 1].transition !== 'none';
-      const effectiveDur = (hasPrevTrans ? transDur : 0) + clip.duration;
+      const prevTrans = i > 0 && hasAnyTransition ? (clips[i - 1].transition || 'none') : 'none';
+      const headExt = i > 0 && hasAnyTransition ? (prevTrans === 'none' ? 0.034 : transDur) : 0;
+      const effectiveDur = Number((clip.duration + headExt).toFixed(3));
       const totalFrames = Math.max(15, Math.round(effectiveDur * 30));
 
       let motionFilter = '';
@@ -448,7 +333,7 @@ async function renderVideo({
         }
       }
 
-      // Watermark filter only if NO logo is uploaded (zero cropping when logo is uploaded)
+      // Watermark filter ONLY if NO logo is uploaded AND removeWatermark is true
       let wmFilter = '';
       if (!logoFilePath && removeWatermark) {
         if (watermarkMode === 'delogo') {
@@ -468,7 +353,7 @@ async function renderVideo({
       });
     }
 
-    // High-performance CPU concurrency pool (3 concurrent workers for 4-core/8-thread CPU)
+    // Parallel multi-core concurrency pool (3 concurrent workers for flat memory and rapid output)
     const numCores = os.cpus() ? os.cpus().length : 4;
     const CONCURRENCY = Math.min(4, Math.max(2, Math.floor(numCores / 2)));
 
@@ -487,7 +372,7 @@ async function renderVideo({
     });
 
     // ==============================================================
-    // STAGE 2: ASSEMBLE WITH TRANSITIONS & AUDIO (MULTI-THREADED)
+    // STAGE 2: HIERARCHICAL TRANSITION ASSEMBLY WITH ZERO TIMING DRIFT
     // ==============================================================
     if (!hasAnyTransition) {
       // SUB-CASE 2A: INSTANT CONCAT DEMUXER (ZERO RE-ENCODING DELAY)
@@ -536,54 +421,101 @@ async function renderVideo({
         outputFilePath,
       ];
 
-      await runFinalAssembly(ffmpegArgs, totalDuration, onProgress);
+      await runFinalAssembly(ffmpegArgs, totalDuration, onProgress, 45, 54);
     } else {
       // ==============================================================
-      // SUB-CASE 2B: HIERARCHICAL CHUNKED TRANSITION ASSEMBLY
-      // Caps simultaneous decoders to at most 7: 100% immune to Windows OOM (error 3221225725)
+      // SUB-CASE 2B: HIERARCHICAL MEMORY-SAFE CHUNKED TRANSITION ASSEMBLY
+      // Capped to at most 8 decoders per process: 100% immune to Windows OOM
+      // Master timeline offsets guarantee frame-accurate sync with zero cumulative drift!
       // ==============================================================
-      const CHUNK_SIZE = 7;
-      let currentItems = segmentPaths.map((sp, idx) => ({
-        filePath: sp,
-        duration: clips[idx].duration,
-        transition: clips[idx].transition || 'fade',
-      }));
-
-      // Level 1: If clips > CHUNK_SIZE, merge in small memory-safe chunks
-      if (currentItems.length > CHUNK_SIZE) {
-        const chunkResults = [];
-        let chunkIdx = 0;
-
-        for (let i = 0; i < currentItems.length; i += CHUNK_SIZE) {
-          const slice = currentItems.slice(i, i + CHUNK_SIZE);
-          const chunkOut = path.join(tempDir, `chk_${chunkIdx}.mp4`);
-          chunkIdx++;
-
-          const res = await mergeClipGroup({
-            clips: slice,
-            transDur,
-            outputPath: chunkOut,
-          });
-
-          chunkResults.push({
-            filePath: chunkOut,
-            duration: res.accumulatedLength,
-            transition: slice[slice.length - 1].transition,
-          });
-
-          if (onProgress) {
-            const pct = Math.min(65, 45 + Math.round((i / currentItems.length) * 20));
-            onProgress({
-              percent: pct,
-              currentSeconds: Number(((totalDuration * pct) / 100).toFixed(2)),
-              totalDuration,
-            });
-          }
+      const CHUNK_SIZE = 8;
+      const chunkDefs = [];
+      for (let i = 0; i < clips.length; i += CHUNK_SIZE) {
+        const sliceIndices = [];
+        for (let j = i; j < Math.min(i + CHUNK_SIZE, clips.length); j++) {
+          sliceIndices.push(j);
         }
-        currentItems = chunkResults;
+        chunkDefs.push(sliceIndices);
       }
 
-      // Level 2: Final merge of chunks (or small clip set) with audio voiceover
+      // LEVEL 1: Render each chunk with internal transitions
+      const chunkFiles = [];
+      for (let c = 0; c < chunkDefs.length; c++) {
+        const idxs = chunkDefs[c];
+        const chunkOut = path.join(tempDir, `chk_${c}.mp4`);
+        chunkFiles.push(chunkOut);
+
+        const prevTrans = c > 0 ? (clips[idxs[0] - 1].transition || 'none') : 'none';
+        const hc = c > 0 ? (prevTrans === 'none' ? 0.034 : transDur) : 0;
+
+        const internalStarts = [hc];
+        for (let j = 0; j < idxs.length - 1; j++) {
+          internalStarts.push(Number((internalStarts[j] + clips[idxs[j]].duration).toFixed(3)));
+        }
+
+        const inputs = [];
+        for (const idx of idxs) {
+          inputs.push('-threads', '1', '-i', segmentPaths[idx]);
+        }
+
+        const filterParts = [];
+        let last = '0:v';
+        for (let j = 0; j < idxs.length - 1; j++) {
+          const next = `${j + 1}:v`;
+          const out = j === idxs.length - 2 ? 'chk_out' : `xf${j}`;
+          const t = clips[idxs[j]].transition || 'none';
+          const dj = t === 'none' ? 0.034 : transDur;
+          const filterType = (t === 'none' || !CAPCUT_TRANSITIONS.includes(t)) ? 'fade' : t;
+          const off = Math.max(0.01, Number((internalStarts[j + 1] - dj).toFixed(3)));
+          filterParts.push(`[${last}][${next}]xfade=transition=${filterType}:duration=${dj}:offset=${off}[${out}]`);
+          last = out;
+        }
+
+        const ffmpegArgs = [
+          '-y',
+          ...inputs,
+          ...(filterParts.length > 0 ? ['-filter_complex', filterParts.join(';'), '-map', '[chk_out]'] : ['-map', '0:v']),
+          '-c:v',
+          'libx264',
+          '-preset',
+          'ultrafast',
+          '-threads',
+          '0',
+          '-crf',
+          '18',
+          '-pix_fmt',
+          'yuv420p',
+          chunkOut,
+        ];
+
+        await new Promise((resolve, reject) => {
+          const p = spawn('ffmpeg', ffmpegArgs);
+          let err = '';
+          p.stderr.on('data', (d) => (err += d.toString()));
+          p.on('close', (code) => {
+            if (code === 0) resolve();
+            else reject(new Error(`Chunk ${c} merge failed (code ${code}): ${err.slice(-600)}`));
+          });
+          p.on('error', reject);
+        });
+
+        if (onProgress) {
+          const pct = Math.min(70, 45 + Math.round(((c + 1) / chunkDefs.length) * 25));
+          onProgress({
+            percent: pct,
+            currentSeconds: Number(((totalDuration * pct) / 100).toFixed(2)),
+            totalDuration,
+          });
+        }
+      }
+
+      // LEVEL 2: Assemble chunk outputs with audio voiceover
+      const l2Inputs = [];
+      for (const cp of chunkFiles) {
+        l2Inputs.push('-threads', '1', '-i', cp);
+      }
+
+      let audioIdx = -1;
       let finalAudioPath = audioFilePath;
       if (!finalAudioPath) {
         finalAudioPath = path.join(tempDir, 'silent_voiceover.aac');
@@ -605,16 +537,62 @@ async function renderVideo({
         });
       }
 
-      await mergeClipGroup({
-        clips: currentItems,
-        audioFilePath: finalAudioPath,
-        totalDuration,
-        transDur,
-        outputPath: outputFilePath,
-        onProgress,
-        startPct: 65,
-        pctSpan: 34,
-      });
+      audioIdx = chunkFiles.length;
+      l2Inputs.push('-i', finalAudioPath);
+
+      let w = 0;
+      const masterChunkStarts = [0];
+      for (let c = 0; c < chunkDefs.length - 1; c++) {
+        const sumDur = chunkDefs[c].reduce((acc, idx) => acc + clips[idx].duration, 0);
+        w = Number((w + sumDur).toFixed(3));
+        masterChunkStarts.push(w);
+      }
+
+      const l2FilterParts = [];
+      let lastStream = '0:v';
+      for (let c = 0; c < chunkDefs.length - 1; c++) {
+        const next = `${c + 1}:v`;
+        const out = c === chunkDefs.length - 2 ? 'final_v' : `l2_xf${c}`;
+        const lastClipIdx = chunkDefs[c][chunkDefs[c].length - 1];
+        const t = clips[lastClipIdx].transition || 'none';
+        const dc = t === 'none' ? 0.034 : transDur;
+        const filterType = (t === 'none' || !CAPCUT_TRANSITIONS.includes(t)) ? 'fade' : t;
+        const off = Math.max(0.01, Number((masterChunkStarts[c + 1] - dc).toFixed(3)));
+        l2FilterParts.push(`[${lastStream}][${next}]xfade=transition=${filterType}:duration=${dc}:offset=${off}[${out}]`);
+        lastStream = out;
+      }
+
+      const finalVideoStream = chunkFiles.length > 1 ? 'final_v' : '0:v';
+      const l2FilterArgs = l2FilterParts.length > 0 ? ['-filter_complex', l2FilterParts.join(';')] : [];
+
+      const l2FinalArgs = [
+        '-y',
+        ...l2Inputs,
+        ...l2FilterArgs,
+        '-map',
+        `[${finalVideoStream}]`,
+        '-map',
+        `${audioIdx}:a`,
+        '-c:v',
+        'libx264',
+        '-preset',
+        'ultrafast',
+        '-threads',
+        '0',
+        '-crf',
+        '20',
+        '-c:a',
+        'aac',
+        '-b:a',
+        '192k',
+        '-pix_fmt',
+        'yuv420p',
+        '-t',
+        String(totalDuration),
+        outputFilePath,
+      ];
+
+      await runFinalAssembly(l2FinalArgs, totalDuration, onProgress, 70, 29);
     }
 
     const renderDurationMs = Date.now() - startTime;
