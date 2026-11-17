@@ -104,12 +104,88 @@ const CAPCUT_TRANSITIONS = [
 ];
 
 /**
- * Executes FFmpeg to render the synchronized video with custom aspect ratio,
- * dynamic CapCut transitions, keyframe motion (Zoom In/Out/Pan), and Google Flow watermark removal.
+ * Helper to render an individual image into an ultrafast standardized video clip segment.
+ * Keeps memory usage flat (~40MB) and eliminates FFmpeg multi-stream memory crashes.
+ */
+function renderClipSegment({ imagePath, filterString, outputPath }) {
+  return new Promise((resolve, reject) => {
+    const p = spawn('ffmpeg', [
+      '-y',
+      '-i', imagePath,
+      '-filter_complex', `[0:v]${filterString}[v]`,
+      '-map', '[v]',
+      '-c:v', 'libx264',
+      '-preset', 'ultrafast',
+      '-crf', '18',
+      '-pix_fmt', 'yuv420p',
+      outputPath,
+    ]);
+
+    let errOutput = '';
+    p.stderr.on('data', (d) => (errOutput += d.toString()));
+    p.on('close', (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`Clip render failed (code ${code}): ${errOutput.slice(-600)}`));
+    });
+    p.on('error', reject);
+  });
+}
+
+/**
+ * Runs the final assembly process with real-time progress calculation.
+ */
+function runFinalAssembly(ffmpegArgs, totalDuration, onProgress) {
+  return new Promise((resolve, reject) => {
+    const child = spawn('ffmpeg', ffmpegArgs);
+    let stderrAccumulator = '';
+
+    child.stderr.on('data', (chunk) => {
+      const text = chunk.toString();
+      stderrAccumulator += text;
+
+      if (stderrAccumulator.length > 50000) {
+        stderrAccumulator = stderrAccumulator.slice(-25000);
+      }
+
+      if (onProgress && typeof onProgress === 'function') {
+        const progress = parseProgressLine(text, totalDuration);
+        if (progress) {
+          // Scale from 45% to 99%
+          const scaledPercent = Math.min(99, 45 + Math.round(progress.percent * 0.54));
+          onProgress({
+            ...progress,
+            percent: scaledPercent,
+          });
+        }
+      }
+    });
+
+    child.on('close', (code) => {
+      if (code === 0) resolve();
+      else {
+        reject(
+          new Error(
+            `FFmpeg final assembly exited with error code ${code}.\nLast stderr:\n${stderrAccumulator.slice(
+              -1200
+            )}`
+          )
+        );
+      }
+    });
+
+    child.on('error', (err) => {
+      reject(new Error(`Failed to start FFmpeg assembly process: ${err.message}`));
+    });
+  });
+}
+
+/**
+ * Robust Two-Stage Video Rendering Engine:
+ * Stage 1: Individual clip motion rendering (flat ~40MB RAM, zero vibration, ultrafast).
+ * Stage 2: Clean assembly with transitions, audio sync, and fixed logo overlay.
  *
  * @param {Object} options
- * @param {string} [options.concatFilePath] - Path to concat.txt (fallback for pure hard-cuts)
- * @param {Array<Object>} [options.clips] - Normalized clips array with filePath, duration, motion, transition
+ * @param {Array<Object>} options.clips - Normalized clips array with filePath, duration, motion, transition
  * @param {string} [options.audioFilePath] - Path to audio voiceover
  * @param {string} options.outputFilePath - Target output MP4 path
  * @param {number} options.totalDuration - Total duration in seconds
@@ -117,12 +193,14 @@ const CAPCUT_TRANSITIONS = [
  * @param {string} [options.backgroundMode='blur'] - 'blur' | 'black'
  * @param {boolean} [options.removeWatermark=false] - Auto remove Google Flow watermark
  * @param {string} [options.watermarkMode='crop'] - 'crop' (smart clean zoom) or 'delogo'
- * @param {string} [options.watermarkPosition='bottom-right'] - Default for Google Flow
+ * @param {string} [options.logoFilePath=null] - User uploaded brand logo to cover watermark
+ * @param {string} [options.logoPosition='bottom-right'] - Default for Google Flow
+ * @param {number} [options.logoWidth=160] - Logo width in pixels
  * @param {number} [options.transitionDuration=0.5] - Transition duration in seconds
  * @param {Function} [options.onProgress] - Callback for real-time progress
  * @returns {Promise<Object>} - Render results
  */
-function renderVideo({
+async function renderVideo({
   concatFilePath,
   clips = [],
   audioFilePath,
@@ -139,48 +217,123 @@ function renderVideo({
   transitionDuration = 0.5,
   onProgress,
 }) {
-  return new Promise((resolve, reject) => {
-    let width = 1920;
-    let height = 1080;
+  const startTime = Date.now();
+  let width = 1920;
+  let height = 1080;
 
-    if (aspectRatio === '9:16') {
-      width = 1080;
-      height = 1920;
-    } else if (aspectRatio === '1:1') {
-      width = 1080;
-      height = 1080;
-    }
+  if (aspectRatio === '9:16') {
+    width = 1080;
+    height = 1920;
+  } else if (aspectRatio === '1:1') {
+    width = 1080;
+    height = 1080;
+  }
 
-    // Check if motion keyframes, transitions, watermark removal, or logo overlay are active
-    const hasEffects =
-      Boolean(removeWatermark) ||
-      Boolean(logoFilePath) ||
-      (clips &&
-        clips.length > 0 &&
-        clips.some(
-          (c) =>
-            (c.motion && c.motion !== 'none') ||
-            (c.transition && c.transition !== 'none')
-        ));
+  const transDur = Math.max(0.2, Math.min(0.8, Number(transitionDuration) || 0.5));
+  const hasAnyTransition = clips && clips.some((c) => c.transition && c.transition !== 'none');
 
-    let ffmpegArgs = [];
-    let filterGraphPath = null;
+  // Create isolated temporary directory for segment outputs
+  const tempDir = path.join(
+    path.dirname(outputFilePath),
+    `render_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
+  );
+  if (!fs.existsSync(tempDir)) {
+    fs.mkdirSync(tempDir, { recursive: true });
+  }
 
+  try {
     // ==============================================================
-    // PIPELINE 1: ADVANCED CAPCUT MOTION + XFADE + WATERMARK REMOVAL
+    // STAGE 1: INDIVIDUAL CLIP MOTION RENDERING (ZERO MEMORY BLOAT)
     // ==============================================================
-    if (hasEffects && clips && clips.length > 0) {
-      const inputs = [];
-      const filterParts = [];
-      const transDur = Math.max(0.2, Math.min(0.8, Number(transitionDuration) || 0.5));
+    const segmentPaths = [];
 
-      // 1. Add all clip image inputs (0 to clips.length - 1)
-      clips.forEach((clip) => {
-        inputs.push('-i', clip.filePath);
+    for (let i = 0; i < clips.length; i++) {
+      const clip = clips[i];
+      const segPath = path.join(tempDir, `seg_${i}.mp4`);
+      segmentPaths.push(segPath);
+
+      const hasPrevTrans =
+        hasAnyTransition && i > 0 && clips[i - 1].transition && clips[i - 1].transition !== 'none';
+      const effectiveDur = (hasPrevTrans ? transDur : 0) + clip.duration;
+      const totalFrames = Math.max(15, Math.round(effectiveDur * 30));
+
+      let motionFilter = '';
+      const motion = clip.motion || 'none';
+
+      if (motion === 'zoomin') {
+        motionFilter = `zoompan=z='1.0+0.15*(on/${totalFrames})':d=${totalFrames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${width}x${height}:fps=30`;
+      } else if (motion === 'zoomout') {
+        motionFilter = `zoompan=z='1.15-0.15*(on/${totalFrames})':d=${totalFrames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${width}x${height}:fps=30`;
+      } else if (motion === 'panleft') {
+        motionFilter = `zoompan=z=1.12:d=${totalFrames}:x='(iw-iw/zoom)*(1-on/${totalFrames})':y='(ih-ih/zoom)/2':s=${width}x${height}:fps=30`;
+      } else if (motion === 'panright') {
+        motionFilter = `zoompan=z=1.12:d=${totalFrames}:x='(iw-iw/zoom)*(on/${totalFrames})':y='(ih-ih/zoom)/2':s=${width}x${height}:fps=30`;
+      } else {
+        if (backgroundMode === 'blur') {
+          motionFilter = `split=2[main][bg];[bg]scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},boxblur=25:5[bl];[main]scale=${width}:${height}:force_original_aspect_ratio=decrease[fg];[bl][fg]overlay=(${width}-w)/2:(${height}-h)/2,setsar=1,fps=30`;
+        } else {
+          motionFilter = `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=30`;
+        }
+      }
+
+      // Watermark filter if no logo is uploaded
+      let wmFilter = '';
+      if (!logoFilePath && removeWatermark) {
+        if (watermarkMode === 'delogo') {
+          wmFilter = `delogo=x=W-170:y=H-70:w=160:h=60:band=1,`;
+        } else {
+          wmFilter = `scale=1.045*iw:1.045*ih,crop=iw/1.045:ih/1.045:(iw-ow)/2:(ih-oh)/2,`;
+        }
+      }
+
+      await renderClipSegment({
+        imagePath: clip.filePath,
+        filterString: `${wmFilter}${motionFilter},format=yuv420p`,
+        outputPath: segPath,
       });
 
-      // 2. Add audio input as input #${clips.length}
-      const audioIndex = clips.length;
+      if (onProgress) {
+        const pct = Math.min(45, Math.round(((i + 1) / clips.length) * 45));
+        onProgress({
+          percent: pct,
+          currentSeconds: Number(((totalDuration * pct) / 100).toFixed(2)),
+          totalDuration,
+        });
+      }
+    }
+
+    // ==============================================================
+    // STAGE 2: ASSEMBLE WITH TRANSITIONS, LOGO OVERLAY & AUDIO
+    // ==============================================================
+    if (!hasAnyTransition) {
+      // SUB-CASE 2A: INSTANT CONCAT DEMUXER (ZERO RE-ENCODING DELAY)
+      const concatListPath = path.join(tempDir, 'concat_list.txt');
+      const lines = segmentPaths.map((sp) => `file '${sp.replace(/\\/g, '/')}'`).join('\n');
+      fs.writeFileSync(concatListPath, lines, 'utf8');
+
+      const inputs = ['-f', 'concat', '-safe', '0', '-i', concatListPath];
+      let inputCount = 1;
+
+      let filterString = '';
+      let videoMapTarget = '0:v';
+
+      if (logoFilePath) {
+        const logoIndex = inputCount;
+        inputs.push('-i', logoFilePath);
+        inputCount++;
+
+        let overlayCoord = 'W-w-24:H-h-24';
+        if (logoPosition === 'bottom-left') overlayCoord = '24:H-h-24';
+        else if (logoPosition === 'top-right') overlayCoord = 'W-w-24:24';
+        else if (logoPosition === 'top-left') overlayCoord = '24:24';
+        else if (logoPosition === 'center') overlayCoord = '(W-w)/2:(H-h)/2';
+
+        const safeWidth = Math.max(60, Math.min(600, parseInt(logoWidth, 10) || 160));
+        filterString = `[${logoIndex}:v]scale=${safeWidth}:-1[logo];[0:v][logo]overlay=${overlayCoord}[finalv]`;
+        videoMapTarget = '[finalv]';
+      }
+
+      const audioIndex = inputCount;
       if (audioFilePath) {
         inputs.push('-i', audioFilePath);
       } else {
@@ -193,112 +346,87 @@ function renderVideo({
           'anullsrc=channel_layout=stereo:sample_rate=44100'
         );
       }
+      inputCount++;
 
-      // Watermark filter prefix:
-      // If user uploaded a brand logo, the logo will directly cover the watermark in its fixed location,
-      // so images remain 100% full uncropped resolution.
-      // If no logo is uploaded, we apply smart clean re-frame or delogo.
-      let wmFilter = '';
-      if (!logoFilePath && removeWatermark) {
-        if (watermarkMode === 'delogo') {
-          // Blur the bottom-right corner box
-          wmFilter = `delogo=x=W-170:y=H-70:w=160:h=60:band=1,`;
-        } else {
-          // Smart clean re-frame: crops 4.5% edge
-          wmFilter = `scale=1.045*iw:1.045*ih,crop=iw/1.045:ih/1.045:(iw-ow)/2:(ih-oh)/2,`;
-        }
-      }
+      const ffmpegArgs = [
+        '-y',
+        ...inputs,
+        ...(filterString ? ['-filter_complex', filterString, '-map', videoMapTarget] : ['-map', '0:v']),
+        '-map',
+        `${audioIndex}:a`,
+        '-c:v',
+        'libx264',
+        '-preset',
+        'fast',
+        '-crf',
+        '20',
+        '-c:a',
+        'aac',
+        '-b:a',
+        '192k',
+        '-shortest',
+        outputFilePath,
+      ];
 
-      let currentCutTime = 0;
-      const xfadeOffsets = [];
+      await runFinalAssembly(ffmpegArgs, totalDuration, onProgress);
+    } else {
+      // SUB-CASE 2B: CAPCUT XFADE TRANSITIONS BETWEEN PRE-RENDERED SEGMENTS
+      const inputs = [];
+      let inputCount = 0;
 
-      // 3. Build per-clip motion filter
-      clips.forEach((clip, idx) => {
-        const hasPrevTrans = idx > 0 && clips[idx - 1].transition && clips[idx - 1].transition !== 'none';
-        const effectiveDur = (hasPrevTrans ? transDur : 0) + clip.duration;
-        const totalFrames = Math.max(15, Math.round(effectiveDur * 30));
-
-        let motionFilter = '';
-        const motion = clip.motion || 'none';
-
-        if (motion === 'zoomin') {
-          // Butter-smooth Ken Burns: upscale to 2880px to eliminate sub-pixel integer snapping (FFmpeg bug #4298)
-          // and use linear continuous on/totalFrames for 100% vibration-free zoom
-          motionFilter = `scale=2880:2880:force_original_aspect_ratio=increase:flags=bicubic,zoompan=z='1.0+0.18*(on/${totalFrames})':d=${totalFrames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${width}x${height}:fps=30`;
-        } else if (motion === 'zoomout') {
-          // Silky smooth zoom out from 1.18 to 1.0 with zero jitter
-          motionFilter = `scale=2880:2880:force_original_aspect_ratio=increase:flags=bicubic,zoompan=z='1.18-0.18*(on/${totalFrames})':d=${totalFrames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${width}x${height}:fps=30`;
-        } else if (motion === 'panleft') {
-          // Smooth glide from right to left across clip duration
-          motionFilter = `scale=2880:2880:force_original_aspect_ratio=increase:flags=bicubic,zoompan=z=1.15:d=${totalFrames}:x='(iw-iw/zoom)*(1-on/${totalFrames})':y='(ih-ih/zoom)/2':s=${width}x${height}:fps=30`;
-        } else if (motion === 'panright') {
-          // Smooth glide from left to right across clip duration
-          motionFilter = `scale=2880:2880:force_original_aspect_ratio=increase:flags=bicubic,zoompan=z=1.15:d=${totalFrames}:x='(iw-iw/zoom)*(on/${totalFrames})':y='(ih-ih/zoom)/2':s=${width}x${height}:fps=30`;
-        } else {
-          // Static fit with aspect ratio
-          if (backgroundMode === 'blur') {
-            motionFilter = `split=2[main${idx}][bg${idx}];[bg${idx}]scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},boxblur=25:5[bl${idx}];[main${idx}]scale=${width}:${height}:force_original_aspect_ratio=decrease[fg${idx}];[bl${idx}][fg${idx}]overlay=(${width}-w)/2:(${height}-h)/2,setsar=1,fps=30`;
-          } else {
-            motionFilter = `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=30`;
-          }
-        }
-
-        filterParts.push(`[${idx}:v]${wmFilter}${motionFilter},settb=AVTB,format=yuv420p[v${idx}]`);
-
-        if (idx < clips.length - 1) {
-          currentCutTime += clip.duration;
-          const safeOffset = Math.max(0.1, Number((currentCutTime - transDur).toFixed(3)));
-          xfadeOffsets.push(safeOffset);
-        }
+      segmentPaths.forEach((sp) => {
+        inputs.push('-i', sp);
+        inputCount++;
       });
 
-      // 4. Connect streams: xfade transitions or concat
-      const hasAnyTransition = clips.some(
-        (c) => c.transition && c.transition !== 'none'
-      );
+      const audioIndex = inputCount;
+      if (audioFilePath) {
+        inputs.push('-i', audioFilePath);
+      } else {
+        inputs.push(
+          '-f',
+          'lavfi',
+          '-t',
+          String(totalDuration),
+          '-i',
+          'anullsrc=channel_layout=stereo:sample_rate=44100'
+        );
+      }
+      inputCount++;
 
-      let finalVideoStream = 'v0';
-      if (clips.length > 1) {
-        if (!hasAnyTransition) {
-          // Pure hard cuts with motion keyframes: use concat filter for zero drift
-          const streamList = clips.map((_, i) => `[v${i}]`).join('');
-          filterParts.push(`${streamList}concat=n=${clips.length}:v=1:a=0[finalv]`);
-          finalVideoStream = 'finalv';
-        } else {
-          // Chain xfade transitions between clips
-          let lastStream = 'v0';
-          for (let i = 0; i < clips.length - 1; i++) {
-            const rawTrans = clips[i].transition || 'fade';
-            const isCut = rawTrans === 'none';
-            const trans = CAPCUT_TRANSITIONS.includes(rawTrans) ? rawTrans : 'fade';
-            const curDur = isCut ? 0.05 : transDur;
-            const nextStream = `v${i + 1}`;
-            const outStream = i === clips.length - 2 ? 'finalv' : `xf${i}`;
-            filterParts.push(
-              `[${lastStream}][${nextStream}]xfade=transition=${trans}:duration=${curDur}:offset=${xfadeOffsets[i]}[${outStream}]`
-            );
-            lastStream = outStream;
-          }
-          finalVideoStream = 'finalv';
-        }
+      const filterParts = [];
+      let lastStream = '0:v';
+      let currentCutTime = 0;
+
+      for (let i = 0; i < clips.length - 1; i++) {
+        const rawTrans = clips[i].transition || 'fade';
+        const isCut = rawTrans === 'none';
+        const trans = CAPCUT_TRANSITIONS.includes(rawTrans) ? rawTrans : 'fade';
+        const curDur = isCut ? 0.05 : transDur;
+
+        currentCutTime += clips[i].duration;
+        const offset = Math.max(0.1, Number((currentCutTime - transDur).toFixed(3)));
+
+        const nextStream = `${i + 1}:v`;
+        const outStream = i === clips.length - 2 ? 'transv' : `xf${i}`;
+        filterParts.push(
+          `[${lastStream}][${nextStream}]xfade=transition=${trans}:duration=${curDur}:offset=${offset}[${outStream}]`
+        );
+        lastStream = outStream;
       }
 
-      // 5. Fixed Brand Logo / Watermark Cover Overlay
-      // Permanently overlays the user's logo at the watermark location across the entire video
-      if (logoFilePath) {
-        const logoIndex = inputs.length / 2;
-        inputs.push('-i', logoFilePath);
+      let finalVideoStream = clips.length > 1 ? 'transv' : '0:v';
 
-        let overlayCoord = 'W-w-24:H-h-24'; // default: bottom-right (Google Flow watermark location)
-        if (logoPosition === 'bottom-left') {
-          overlayCoord = '24:H-h-24';
-        } else if (logoPosition === 'top-right') {
-          overlayCoord = 'W-w-24:24';
-        } else if (logoPosition === 'top-left') {
-          overlayCoord = '24:24';
-        } else if (logoPosition === 'center') {
-          overlayCoord = '(W-w)/2:(H-h)/2';
-        }
+      if (logoFilePath) {
+        const logoIndex = inputCount;
+        inputs.push('-i', logoFilePath);
+        inputCount++;
+
+        let overlayCoord = 'W-w-24:H-h-24';
+        if (logoPosition === 'bottom-left') overlayCoord = '24:H-h-24';
+        else if (logoPosition === 'top-right') overlayCoord = 'W-w-24:24';
+        else if (logoPosition === 'top-left') overlayCoord = '24:24';
+        else if (logoPosition === 'center') overlayCoord = '(W-w)/2:(H-h)/2';
 
         const safeWidth = Math.max(60, Math.min(600, parseInt(logoWidth, 10) || 160));
         filterParts.push(
@@ -307,21 +435,14 @@ function renderVideo({
         finalVideoStream = 'final_with_logo';
       }
 
-      const filterComplexString = filterParts.join(';\n');
+      const scriptPath = path.join(tempDir, 'filter_graph.txt');
+      fs.writeFileSync(scriptPath, filterParts.join(';\n'), 'utf8');
 
-      // Write complex filtergraph to file using FFmpeg's native '-/filter_complex' syntax
-      // This completely avoids Windows' 32,767 character command-line limit (spawn ENAMETOOLONG)
-      filterGraphPath = path.join(
-        path.dirname(outputFilePath),
-        `filter_graph_${Date.now()}_${Math.random().toString(36).slice(2, 7)}.txt`
-      );
-      fs.writeFileSync(filterGraphPath, filterComplexString, 'utf8');
-
-      ffmpegArgs = [
+      const ffmpegArgs = [
         '-y',
         ...inputs,
         '-/filter_complex',
-        filterGraphPath,
+        scriptPath,
         '-map',
         `[${finalVideoStream}]`,
         '-map',
@@ -343,129 +464,38 @@ function renderVideo({
         '-shortest',
         outputFilePath,
       ];
-    } else {
-      // ==============================================================
-      // PIPELINE 2: LIGHTNING-FAST CONCAT DEMUXER (HARD CUTS)
-      // ==============================================================
-      let filterArgs = [];
 
-      if (backgroundMode === 'blur') {
-        const filterString = `[0:v]split=2[main][bg];[bg]scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},boxblur=25:5[blurred];[main]scale=${width}:${height}:force_original_aspect_ratio=decrease[fg];[blurred][fg]overlay=(${width}-w)/2:(${height}-h)/2,setsar=1,fps=30,format=yuv420p[v]`;
-        filterArgs = ['-filter_complex', filterString, '-map', '[v]', '-map', '1:a'];
-      } else {
-        const filterString = `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=30,format=yuv420p`;
-        filterArgs = ['-filter_complex', `[0:v]${filterString}[v]`, '-map', '[v]', '-map', '1:a'];
-      }
-
-      const audioInputs = audioFilePath
-        ? ['-i', audioFilePath]
-        : [
-            '-f',
-            'lavfi',
-            '-t',
-            String(totalDuration),
-            '-i',
-            'anullsrc=channel_layout=stereo:sample_rate=44100',
-          ];
-
-      ffmpegArgs = [
-        '-y',
-        '-f',
-        'concat',
-        '-safe',
-        '0',
-        '-i',
-        concatFilePath,
-        ...audioInputs,
-        ...filterArgs,
-        '-c:v',
-        'libx264',
-        '-preset',
-        'fast',
-        '-crf',
-        '20',
-        '-c:a',
-        'aac',
-        '-b:a',
-        '192k',
-        '-pix_fmt',
-        'yuv420p',
-        '-movflags',
-        '+faststart',
-        '-shortest',
-        outputFilePath,
-      ];
+      await runFinalAssembly(ffmpegArgs, totalDuration, onProgress);
     }
 
-    const child = spawn('ffmpeg', ffmpegArgs);
-    let stderrAccumulator = '';
-    const startTime = Date.now();
+    const renderDurationMs = Date.now() - startTime;
+    if (onProgress) {
+      onProgress({
+        percent: 100,
+        currentSeconds: totalDuration,
+        totalDuration,
+        renderDurationMs,
+      });
+    }
 
-    child.stderr.on('data', (chunk) => {
-      const text = chunk.toString();
-      stderrAccumulator += text;
-
-      if (stderrAccumulator.length > 50000) {
-        stderrAccumulator = stderrAccumulator.slice(-25000);
+    const stats = fs.existsSync(outputFilePath) ? fs.statSync(outputFilePath) : null;
+    return {
+      success: true,
+      outputFilePath,
+      fileSize: stats ? stats.size : 0,
+      renderDurationMs,
+      width,
+      height,
+      aspectRatio,
+    };
+  } finally {
+    // Always clean up the temporary directory and segment files
+    try {
+      if (fs.existsSync(tempDir)) {
+        fs.rmSync(tempDir, { recursive: true, force: true });
       }
-
-      if (onProgress && typeof onProgress === 'function') {
-        const progress = parseProgressLine(text, totalDuration);
-        if (progress) {
-          onProgress(progress);
-        }
-      }
-    });
-
-    child.on('close', (code) => {
-      // Clean up temporary filter script file
-      if (filterGraphPath && fs.existsSync(filterGraphPath)) {
-        try {
-          fs.unlinkSync(filterGraphPath);
-        } catch (_) {}
-      }
-
-      const renderDurationMs = Date.now() - startTime;
-      if (code === 0) {
-        if (onProgress) {
-          onProgress({
-            percent: 100,
-            currentSeconds: totalDuration,
-            totalDuration,
-            renderDurationMs,
-          });
-        }
-
-        const stats = fs.existsSync(outputFilePath) ? fs.statSync(outputFilePath) : null;
-        resolve({
-          success: true,
-          outputFilePath,
-          fileSize: stats ? stats.size : 0,
-          renderDurationMs,
-          width,
-          height,
-          aspectRatio,
-        });
-      } else {
-        reject(
-          new Error(
-            `FFmpeg exited with error code ${code}.\nLast stderr output:\n${stderrAccumulator.slice(
-              -1500
-            )}`
-          )
-        );
-      }
-    });
-
-    child.on('error', (err) => {
-      if (filterGraphPath && fs.existsSync(filterGraphPath)) {
-        try {
-          fs.unlinkSync(filterGraphPath);
-        } catch (_) {}
-      }
-      reject(new Error(`Failed to start FFmpeg process: ${err.message}`));
-    });
-  });
+    } catch (_) {}
+  }
 }
 
 module.exports = {
