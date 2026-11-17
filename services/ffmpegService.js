@@ -1,5 +1,6 @@
 const { spawn } = require('child_process');
 const fs = require('fs');
+const path = require('path');
 
 /**
  * Retrieves the exact duration of an audio file in seconds using ffprobe.
@@ -159,6 +160,7 @@ function renderVideo({
         ));
 
     let ffmpegArgs = [];
+    let filterGraphPath = null;
 
     // ==============================================================
     // PIPELINE 1: ADVANCED CAPCUT MOTION + XFADE + WATERMARK REMOVAL
@@ -273,11 +275,19 @@ function renderVideo({
 
       const filterComplexString = filterParts.join(';\n');
 
+      // Write complex filtergraph to file using FFmpeg's native '-/filter_complex' syntax
+      // This completely avoids Windows' 32,767 character command-line limit (spawn ENAMETOOLONG)
+      filterGraphPath = path.join(
+        path.dirname(outputFilePath),
+        `filter_graph_${Date.now()}_${Math.random().toString(36).slice(2, 7)}.txt`
+      );
+      fs.writeFileSync(filterGraphPath, filterComplexString, 'utf8');
+
       ffmpegArgs = [
         '-y',
         ...inputs,
-        '-filter_complex',
-        filterComplexString,
+        '-/filter_complex',
+        filterGraphPath,
         '-map',
         `[${finalVideoStream}]`,
         '-map',
@@ -374,6 +384,13 @@ function renderVideo({
     });
 
     child.on('close', (code) => {
+      // Clean up temporary filter script file
+      if (filterGraphPath && fs.existsSync(filterGraphPath)) {
+        try {
+          fs.unlinkSync(filterGraphPath);
+        } catch (_) {}
+      }
+
       const renderDurationMs = Date.now() - startTime;
       if (code === 0) {
         if (onProgress) {
@@ -407,6 +424,11 @@ function renderVideo({
     });
 
     child.on('error', (err) => {
+      if (filterGraphPath && fs.existsSync(filterGraphPath)) {
+        try {
+          fs.unlinkSync(filterGraphPath);
+        } catch (_) {}
+      }
       reject(new Error(`Failed to start FFmpeg process: ${err.message}`));
     });
   });
