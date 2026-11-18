@@ -591,7 +591,7 @@ async function renderVideo({
         lastStream = out;
       }
 
-      const finalVideoStream = chunkFiles.length > 1 ? 'final_v' : '0:v';
+      const mapVideo = l2FilterParts.length > 0 ? '[final_v]' : '0:v';
       const l2FilterArgs = l2FilterParts.length > 0 ? ['-filter_complex', l2FilterParts.join(';')] : [];
 
       const l2FinalArgs = [
@@ -599,7 +599,7 @@ async function renderVideo({
         ...l2Inputs,
         ...l2FilterArgs,
         '-map',
-        `[${finalVideoStream}]`,
+        mapVideo,
         '-map',
         `${audioIdx}:a`,
         '-c:v',
