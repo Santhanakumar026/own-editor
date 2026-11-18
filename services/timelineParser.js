@@ -24,7 +24,7 @@ function toSeconds(str) {
 }
 
 /**
- * Extracts timestamps from image filenames (e.g. "[00-21]_Create_one_16.png", "[00:03] image.png", "[00:00 - 00:03].jpg").
+ * Extracts timestamps from image filenames (e.g. "_0-00_", "_0-06_", "[00-21]_Create_one_16.png", "[00:03] image.png", "[00:00 - 00:03].jpg").
  */
 function extractTimestampFromFilename(filename) {
   if (!filename) return null;
@@ -42,28 +42,29 @@ function extractTimestampFromFilename(filename) {
     }
   }
 
-  // Pattern 2: Bracketed Windows-safe MM-SS or MM:SS clock: [00-21], [00-24], [00:03], [01-15]
+  // Pattern 2: Underscored or bracketed Windows-safe MM-SS or MM:SS clock: _0-00_, _0-06_, [00-21], [00:03], _1-05_, _9-36_
   const bracketClockMatch = name.match(
-    /(?:\[|\()\s*(\d{1,2})[-:_](\d{2}(?:\.\d+)?)\s*(?:\]|\))/
+    /(?:^|[\[\(_\s])(\d{1,2})[-:_](\d{2}(?:\.\d+)?)(?:[\]\)_s\s]|$)/i
   );
   if (bracketClockMatch) {
     const mins = parseFloat(bracketClockMatch[1]);
     const secs = parseFloat(bracketClockMatch[2]);
     if (!isNaN(mins) && !isNaN(secs)) {
-      return { type: 'point', time: Number((mins * 60 + secs).toFixed(2)) };
+      const totalSec = mins * 60 + secs;
+      return { type: 'point', time: Number(totalSec.toFixed(2)) };
     }
   }
 
-  // Pattern 3: Bracketed pure seconds: [21s], [3.5s], [3.5], [21]
-  const bracketSecMatch = name.match(/(?:\[|\()\s*(\d+(?:\.\d+)?)\s*s?\s*(?:\]|\))/i);
-  if (bracketSecMatch) {
-    const sec = parseFloat(bracketSecMatch[1]);
+  // Pattern 3: Pure seconds format: 21s, [21s], _21s, 3.5s
+  const secMatch = name.match(/(?:^|[\[\(_\s])(\d+(?:\.\d+)?)\s*s(?:[\]\)_s\s]|$)/i);
+  if (secMatch) {
+    const sec = parseFloat(secMatch[1]);
     if (!isNaN(sec)) {
       return { type: 'point', time: Number(sec.toFixed(2)) };
     }
   }
 
-  // Pattern 4: Standalone clock time: "image_00:03.jpg" or "00:03_photo.png" or "00-21_scene.png"
+  // Pattern 4: Fallback clock anywhere in filename: "image_00:03.jpg" or "00:03_photo.png" or "00-21_scene.png"
   const clockMatch = name.match(/(?:^|[^\d])(\d{1,2})[-:](\d{2}(?:\.\d+)?)(?:[^\d]|$)/);
   if (clockMatch) {
     const mins = parseFloat(clockMatch[1]);
@@ -110,6 +111,10 @@ function parseAndGenerateTimeline(uploadedImages, rawTimeline, audioDuration, pr
   uploadedImages.forEach((img, idx) => {
     imageByName.set(img.originalname, img);
     imageByName.set(img.originalname.toLowerCase(), img);
+    if (img.filename) {
+      imageByName.set(img.filename, img);
+      imageByName.set(img.filename.toLowerCase(), img);
+    }
     const parsedBase = path.parse(img.originalname).name.toLowerCase();
     if (!imageByName.has(parsedBase)) {
       imageByName.set(parsedBase, img);
@@ -123,56 +128,105 @@ function parseAndGenerateTimeline(uploadedImages, rawTimeline, audioDuration, pr
       .map((img, idx) => ({ img, idx, parsed: extractTimestampFromFilename(img.originalname) }))
       .filter((x) => x.parsed !== null);
 
-    if (withTimestamps.length >= Math.ceil(uploadedImages.length * 0.75)) {
-      // Sort by timestamp
+    if (withTimestamps.length >= Math.max(1, Math.ceil(uploadedImages.length * 0.35))) {
+      // Sort chronologically by timestamp, then naturally by original filename
       withTimestamps.sort((a, b) => {
         const ta = a.parsed.type === 'range' ? a.parsed.start : a.parsed.time;
         const tb = b.parsed.type === 'range' ? b.parsed.start : b.parsed.time;
-        return ta - tb;
+        if (ta !== tb) return ta - tb;
+        return a.img.originalname.localeCompare(b.img.originalname, undefined, { numeric: true });
       });
 
-      const firstIsZero = withTimestamps[0]?.parsed?.time === 0;
-      if (firstIsZero) {
-        entries = withTimestamps.map((item, idx) => {
-          const start = item.parsed.time;
-          let end;
-          if (idx < withTimestamps.length - 1) {
-            end = withTimestamps[idx + 1].parsed.time;
-          } else {
-            end = audioDuration > start ? audioDuration : start + 3.0;
-          }
-          return {
-            imageIndex: item.idx,
-            imageName: item.img.originalname,
-            start: Number(start.toFixed(2)),
-            end: Number(end.toFixed(2)),
-          };
-        });
-      } else {
+      const firstTime =
+        withTimestamps[0]?.parsed?.type === 'range'
+          ? withTimestamps[0].parsed.start
+          : withTimestamps[0].parsed.time;
+
+      if (firstTime > 0) {
+        // Timestamps represent END transitions (e.g. first image ends at 0:06)
         let cursor = 0;
-        entries = withTimestamps.map((item, i) => {
-          if (item.parsed.type === 'range') {
-            return {
-              imageIndex: item.idx,
-              imageName: item.img.originalname,
-              start: item.parsed.start,
-              end: item.parsed.end,
-            };
-          } else {
-            const start = cursor;
-            let end = item.parsed.time;
-            if (i === withTimestamps.length - 1 && audioDuration > end) {
-              end = audioDuration;
-            }
-            cursor = end;
-            return {
-              imageIndex: item.idx,
-              imageName: item.img.originalname,
-              start,
-              end,
-            };
+        let i = 0;
+        while (i < withTimestamps.length) {
+          const curTime =
+            withTimestamps[i].parsed.type === 'range'
+              ? withTimestamps[i].parsed.start
+              : withTimestamps[i].parsed.time;
+          let j = i;
+          while (
+            j < withTimestamps.length &&
+            (withTimestamps[j].parsed.type === 'range'
+              ? withTimestamps[j].parsed.start
+              : withTimestamps[j].parsed.time) === curTime
+          ) {
+            j++;
           }
-        });
+          const count = j - i;
+          const startT = cursor;
+          let endT = curTime;
+          if (j === withTimestamps.length && audioDuration > endT) {
+            endT = audioDuration;
+          }
+          const interval = Math.max(count * 0.5, endT - startT);
+          const step = interval / count;
+          for (let k = 0; k < count; k++) {
+            entries.push({
+              imageIndex: withTimestamps[i + k].idx,
+              imageName: withTimestamps[i + k].img.originalname,
+              start: Number((startT + k * step).toFixed(2)),
+              end: Number((startT + (k + 1) * step).toFixed(2)),
+            });
+          }
+          cursor = endT;
+          i = j;
+        }
+      } else {
+        // firstTime === 0 (first image starts at 0:00, timestamps represent START markers)
+        let i = 0;
+        while (i < withTimestamps.length) {
+          const curTime =
+            withTimestamps[i].parsed.type === 'range'
+              ? withTimestamps[i].parsed.start
+              : withTimestamps[i].parsed.time;
+          let j = i;
+          while (
+            j < withTimestamps.length &&
+            (withTimestamps[j].parsed.type === 'range'
+              ? withTimestamps[j].parsed.start
+              : withTimestamps[j].parsed.time) === curTime
+          ) {
+            j++;
+          }
+          const count = j - i;
+          const startT = curTime;
+          let nextT;
+          if (j < withTimestamps.length) {
+            nextT =
+              withTimestamps[j].parsed.type === 'range'
+                ? withTimestamps[j].parsed.start
+                : withTimestamps[j].parsed.time;
+          } else {
+            nextT = audioDuration > startT ? audioDuration : startT + 3.5 * count;
+          }
+          const interval = Math.max(count * 0.5, nextT - startT);
+          const step = interval / count;
+          for (let k = 0; k < count; k++) {
+            entries.push({
+              imageIndex: withTimestamps[i + k].idx,
+              imageName: withTimestamps[i + k].img.originalname,
+              start: Number((startT + k * step).toFixed(2)),
+              end: Number((startT + (k + 1) * step).toFixed(2)),
+            });
+          }
+          i = j;
+        }
+      }
+
+      // Clamp / extend last entry to audioDuration if audio is longer
+      if (audioDuration > 0 && entries.length > 0) {
+        const last = entries[entries.length - 1];
+        if (last.end < audioDuration) {
+          last.end = Number(audioDuration.toFixed(2));
+        }
       }
     } else {
       // Divide evenly across audio length
@@ -191,20 +245,35 @@ function parseAndGenerateTimeline(uploadedImages, rawTimeline, audioDuration, pr
   }
 
   function resolveImage(entry, entryIdx) {
-    if (typeof entry.imageIndex === 'number' && imageByIndex[entry.imageIndex]) {
-      return imageByIndex[entry.imageIndex];
-    }
+    // 1. MATCH BY NAME FIRST (Deterministic, immune to Multer multipart ordering)
     const nameCandidate = entry.imageName || entry.image || entry.file || entry.name;
     if (nameCandidate) {
       const strVal = String(nameCandidate).trim();
-      const numVal = parseInt(strVal, 10);
-      if (!isNaN(numVal) && String(numVal) === strVal && imageByIndex[numVal]) {
-        return imageByIndex[numVal];
-      }
       if (imageByName.has(strVal)) return imageByName.get(strVal);
       if (imageByName.has(strVal.toLowerCase())) return imageByName.get(strVal.toLowerCase());
       const baseOnly = path.parse(strVal).name.toLowerCase();
       if (imageByName.has(baseOnly)) return imageByName.get(baseOnly);
+
+      // Timestamp matching fallback (e.g. "_0-06_" matching "_0-06__Image_Prompt-_STRI-...")
+      const ts = extractTimestampFromFilename(strVal);
+      if (ts) {
+        const targetTime = ts.type === 'range' ? ts.start : ts.time;
+        for (const img of uploadedImages) {
+          const imgTs = extractTimestampFromFilename(img.originalname);
+          if (imgTs && (imgTs.type === 'range' ? imgTs.start : imgTs.time) === targetTime) {
+            const matchSuffix = strVal.match(/_(\d+)(?:\.[^.]+)?$/);
+            const imgSuffix = img.originalname.match(/_(\d+)(?:\.[^.]+)?$/);
+            if (!matchSuffix || !imgSuffix || matchSuffix[1] === imgSuffix[1]) {
+              return img;
+            }
+          }
+        }
+      }
+    }
+
+    // 2. Fallback to imageIndex only if name is missing or unresolved
+    if (typeof entry.imageIndex === 'number' && imageByIndex[entry.imageIndex]) {
+      return imageByIndex[entry.imageIndex];
     }
     return imageByIndex[entryIdx] || null;
   }
@@ -310,29 +379,15 @@ function parseAndGenerateTimeline(uploadedImages, rawTimeline, audioDuration, pr
     if (clip.start > currentTime + 0.001) {
       const gapDuration = Number((clip.start - currentTime).toFixed(3));
       warnings.push(
-        `Timeline gap detected: ${currentTime}s to ${clip.start}s (${gapDuration}s). Holding visual to preserve sync.`
+        `Timeline gap detected: ${currentTime}s to ${clip.start}s (${gapDuration}s). Bridging to preserve sync.`
       );
       if (normalizedClips.length === 0) {
-        normalizedClips.push({
-          imageName: `${clip.imageName} (intro hold)`,
-          filePath: clip.filePath,
-          start: currentTime,
-          end: clip.start,
-          duration: gapDuration,
-          motion: 'none',
-          transition: 'none',
-        });
+        clip.start = 0;
+        clip.duration = Number((clip.end - 0).toFixed(3));
       } else {
         const prev = normalizedClips[normalizedClips.length - 1];
-        normalizedClips.push({
-          imageName: `${prev.imageName} (gap hold)`,
-          filePath: prev.filePath,
-          start: currentTime,
-          end: clip.start,
-          duration: gapDuration,
-          motion: 'none',
-          transition: 'none',
-        });
+        prev.end = clip.start;
+        prev.duration = Number((clip.start - prev.start).toFixed(3));
       }
       currentTime = clip.start;
     }

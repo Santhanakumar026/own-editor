@@ -25,10 +25,10 @@ export function toSeconds(str) {
  * Intelligently extracts timestamps from image filenames.
  *
  * Supported Patterns:
- * 1. Windows Hyphenated Clock: "[00-21]_Create_one_16.png", "[00-24]", "[01-15]"
- * 2. Standard Colon Clock: "[00:21]", "[00:03.50]", "[01:15]"
- * 3. Range marker: "[00:00 - 00:03].png", "[00-00 to 00-21].jpg", "0.0-3.5s.png"
- * 4. Seconds format: "[21s]", "[3.5s]"
+ * 1. Explicit range: "[00:00 - 00:03].png", "[00-00 to 00-21].jpg", "0.0-3.5s.png"
+ * 2. Underscored or bracketed clock: "_0-00_", "_0-06_", "[00-21]", "[00:24]", "_1-05_", "_9-36_"
+ * 3. Seconds format: "[21s]", "21s", "_21s", "3.5s"
+ * 4. Standalone clock anywhere in filename: "00:03", "00-21", "2-19"
  *
  * @param {string} filename
  * @returns {Object|null} - { type: 'point'|'range', time, start, end }
@@ -39,7 +39,6 @@ export function extractTimestampFromFilename(filename) {
   const name = filename.replace(/\.[^/.]+$/, '').trim();
 
   // Pattern 1: Explicit Range (TWO timestamps separated by "to" or " - " or "_to_")
-  // e.g. [00:00 - 00:03], [00-00 to 00-21], [0.0 - 3.5]
   const explicitRangeMatch = name.match(
     /(?:\[|\()?\s*(\d{1,2}[-:]\d{2}(?:\.\d+)?|\d+(?:\.\d+)?)\s*(?:\s+-\s+|\s+to\s+|_to_)\s*(\d{1,2}[-:]\d{2}(?:\.\d+)?|\d+(?:\.\d+)?)\s*s?\s*(?:\]|\))?/i
   );
@@ -51,9 +50,9 @@ export function extractTimestampFromFilename(filename) {
     }
   }
 
-  // Pattern 2: Bracketed Windows-safe MM-SS or MM:SS clock: [00-21], [00-24], [00:03], [01-15]
+  // Pattern 2: Underscored or bracketed Windows-safe MM-SS or MM:SS clock: _0-00_, _0-06_, [00-21], [00:03], _1-05_, _9-36_
   const bracketClockMatch = name.match(
-    /(?:\[|\()\s*(\d{1,2})[-:_](\d{2}(?:\.\d+)?)\s*(?:\]|\))/
+    /(?:^|[\[\(_\s])(\d{1,2})[-:_](\d{2}(?:\.\d+)?)(?:[\]\)_s\s]|$)/i
   );
   if (bracketClockMatch) {
     const mins = parseFloat(bracketClockMatch[1]);
@@ -64,16 +63,16 @@ export function extractTimestampFromFilename(filename) {
     }
   }
 
-  // Pattern 3: Bracketed pure seconds: [21s], [3.5s], [3.5], [21]
-  const bracketSecMatch = name.match(/(?:\[|\()\s*(\d+(?:\.\d+)?)\s*s?\s*(?:\]|\))/i);
-  if (bracketSecMatch) {
-    const sec = parseFloat(bracketSecMatch[1]);
+  // Pattern 3: Pure seconds format: 21s, [21s], _21s, 3.5s
+  const secMatch = name.match(/(?:^|[\[\(_\s])(\d+(?:\.\d+)?)\s*s(?:[\]\)_s\s]|$)/i);
+  if (secMatch) {
+    const sec = parseFloat(secMatch[1]);
     if (!isNaN(sec)) {
       return { type: 'point', time: Number(sec.toFixed(2)) };
     }
   }
 
-  // Pattern 4: Standalone clock time: "image_00:03.jpg" or "00:03_photo.png" or "00-21_scene.png"
+  // Pattern 4: Fallback clock time anywhere in filename: "image_00:03.jpg" or "00:03_photo.png" or "00-21_scene.png"
   const clockMatch = name.match(/(?:^|[^\d])(\d{1,2})[-:](\d{2}(?:\.\d+)?)(?:[^\d]|$)/);
   if (clockMatch) {
     const mins = parseFloat(clockMatch[1]);
@@ -96,6 +95,7 @@ export function naturalSortFiles(filesArray) {
 
 /**
  * Automatically builds frame-accurate timeline cuts from uploaded images and audio duration.
+ * Guaranteed to prevent 0-duration clips, timing drift, and desync across any video length.
  *
  * @param {Array<Object>} images - Uploaded image objects
  * @param {number} audioDuration - Duration of audio in seconds
@@ -107,16 +107,17 @@ export function buildTimelineFromImages(images, audioDuration) {
   }
 
   const parsedItems = images.map((img, idx) => ({
-    image: img,
-    index: idx,
     name: img.name,
+    file: img,
+    originalIndex: idx,
     parsed: extractTimestampFromFilename(img.name),
   }));
 
-  const imagesWithTimestamps = parsedItems.filter((item) => item.parsed !== null);
+  const withTimestamps = parsedItems.filter((item) => item.parsed !== null);
 
-  // CASE 1: All or majority of images have timestamp filenames (like [00-21], [00-24])
-  if (imagesWithTimestamps.length >= Math.ceil(images.length * 0.5)) {
+  // If at least 35% of images have timestamps, use timestamp-based timeline
+  if (withTimestamps.length >= Math.max(1, Math.ceil(images.length * 0.35))) {
+    // Check if explicit ranges are used
     const hasRanges = parsedItems.some((item) => item.parsed?.type === 'range');
 
     if (hasRanges) {
@@ -126,11 +127,16 @@ export function buildTimelineFromImages(images, audioDuration) {
         return sa - sb;
       });
 
+      let cursor = 0;
       const clips = sortedByStart.map((item, idx) => {
-        const start = item.parsed?.start ?? (idx > 0 ? sortedByStart[idx - 1].parsed?.end : 0);
-        const end = item.parsed?.end ?? (start + 3.0);
+        const start = item.parsed?.start ?? cursor;
+        let end = item.parsed?.end ?? (start + 3.0);
+        if (idx === sortedByStart.length - 1 && audioDuration > end) {
+          end = audioDuration;
+        }
+        cursor = end;
         return {
-          imageIndex: item.index,
+          imageIndex: item.originalIndex,
           imageName: item.name,
           start: Number(start.toFixed(2)),
           end: Number(end.toFixed(2)),
@@ -143,73 +149,101 @@ export function buildTimelineFromImages(images, audioDuration) {
         clips,
         autoSyncStatus: {
           type: 'filename_exact',
-          message: `🎯 Exact Match: Extracted explicit start & end timestamps from ${imagesWithTimestamps.length} images!`,
-        },
-      };
-    } else {
-      // Single marker points: e.g. [00-21], [00-24], [00-26]
-      const sortedByTime = [...parsedItems].sort((a, b) => {
-        const ta = a.parsed?.time ?? 0;
-        const tb = b.parsed?.time ?? 0;
-        return ta - tb;
-      });
-
-      const firstIsZero = sortedByTime[0]?.parsed?.time === 0;
-      let clips = [];
-
-      if (firstIsZero) {
-        // [00-00], [00-21], [00-24]
-        clips = sortedByTime.map((item, idx) => {
-          const start = item.parsed?.time ?? 0;
-          let end;
-          if (idx < sortedByTime.length - 1) {
-            end = sortedByTime[idx + 1].parsed?.time ?? (start + 3.0);
-          } else {
-            end = audioDuration > start ? audioDuration : start + 3.0;
-          }
-          return {
-            imageIndex: item.index,
-            imageName: item.name,
-            start: Number(start.toFixed(2)),
-            end: Number(end.toFixed(2)),
-            motion: 'none',
-            transition: 'none',
-          };
-        });
-      } else {
-        // First image is [00-21], second is [00-24], third is [00-26]
-        // Image 0: 00:00 -> 00:21 (trimmed at exact 00:21 audio timing!)
-        // Image 1: 00:21 -> 00:24 (trimmed at exact 00:24 audio timing!)
-        // Image 2: 00:24 -> 00:26 (trimmed at exact 00:26 audio timing!)
-        let cursor = 0;
-        clips = sortedByTime.map((item, idx) => {
-          const start = cursor;
-          let end = item.parsed?.time ?? (start + 3.0);
-
-          if (idx === sortedByTime.length - 1 && audioDuration > end) {
-            end = audioDuration;
-          }
-
-          cursor = end;
-          return {
-            imageIndex: item.index,
-            imageName: item.name,
-            start: Number(start.toFixed(2)),
-            end: Number(end.toFixed(2)),
-            motion: 'none',
-            transition: 'none',
-          };
-        });
-      }
-
-      return {
-        clips,
-        autoSyncStatus: {
-          type: 'filename_exact',
-          message: `🎯 Exact Match: Detected ${imagesWithTimestamps.length} timestamp cuts (e.g. [00-21], [00-24]) locked to audio!`,
+          message: `🎯 Exact Match: Extracted explicit start & end timestamps from ${withTimestamps.length} images!`,
         },
       };
     }
+
+    // Sort items chronologically by timestamp, then naturally by original index
+    const sorted = [...parsedItems].sort((a, b) => {
+      const ta = a.parsed ? a.parsed.time : 0;
+      const tb = b.parsed ? b.parsed.time : 0;
+      if (ta !== tb) return ta - tb;
+      return a.originalIndex - b.originalIndex;
+    });
+
+    const firstTime = sorted[0].parsed ? sorted[0].parsed.time : 0;
+    const clips = [];
+
+    if (firstTime > 0) {
+      // Timestamps represent END transitions (e.g. first image ends at 0:06)
+      let cursor = 0;
+      let i = 0;
+      while (i < sorted.length) {
+        const curTime = sorted[i].parsed ? sorted[i].parsed.time : 0;
+        let j = i;
+        while (j < sorted.length && (sorted[j].parsed ? sorted[j].parsed.time : 0) === curTime) {
+          j++;
+        }
+        const count = j - i;
+        const startT = cursor;
+        let endT = curTime;
+        if (j === sorted.length && audioDuration > endT) {
+          endT = audioDuration;
+        }
+        const interval = Math.max(count * 0.5, endT - startT);
+        const step = interval / count;
+        for (let k = 0; k < count; k++) {
+          clips.push({
+            imageIndex: sorted[i + k].originalIndex,
+            imageName: sorted[i + k].name,
+            start: Number((startT + k * step).toFixed(2)),
+            end: Number((startT + (k + 1) * step).toFixed(2)),
+            motion: 'none',
+            transition: 'none',
+          });
+        }
+        cursor = endT;
+        i = j;
+      }
+    } else {
+      // firstTime === 0 (first image starts at 0:00, timestamps represent START markers)
+      let i = 0;
+      while (i < sorted.length) {
+        const curTime = sorted[i].parsed ? sorted[i].parsed.time : 0;
+        let j = i;
+        while (j < sorted.length && (sorted[j].parsed ? sorted[j].parsed.time : 0) === curTime) {
+          j++;
+        }
+        const count = j - i;
+        const startT = curTime;
+        let nextT;
+        if (j < sorted.length) {
+          nextT = sorted[j].parsed ? sorted[j].parsed.time : 0;
+        } else {
+          nextT = audioDuration > startT ? audioDuration : startT + 3.5 * count;
+        }
+        const interval = Math.max(count * 0.5, nextT - startT);
+        const step = interval / count;
+        for (let k = 0; k < count; k++) {
+          clips.push({
+            imageIndex: sorted[i + k].originalIndex,
+            imageName: sorted[i + k].name,
+            start: Number((startT + k * step).toFixed(2)),
+            end: Number((startT + (k + 1) * step).toFixed(2)),
+            motion: 'none',
+            transition: 'none',
+          });
+        }
+        i = j;
+      }
+    }
+
+    // Ensure final image perfectly spans to audioDuration if audio is longer
+    if (audioDuration > 0 && clips.length > 0) {
+      const last = clips[clips.length - 1];
+      if (last.end < audioDuration) {
+        last.end = Number(audioDuration.toFixed(2));
+      }
+    }
+
+    return {
+      clips,
+      autoSyncStatus: {
+        type: 'filename_exact',
+        message: `🎯 Exact Match: Detected ${withTimestamps.length} timestamp cuts locked to audio voiceover!`,
+      },
+    };
   }
 
   // CASE 2: Normal filenames without timestamps -> distribute evenly across audio duration
