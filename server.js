@@ -53,7 +53,7 @@ const upload = multer({
 });
 
 // Periodic garbage collection: prune uploads/outputs older than 2 hours
-setInterval(() => {
+function pruneOldFiles() {
   const now = Date.now();
   const maxAgeMs = 2 * 60 * 60 * 1000;
 
@@ -61,28 +61,41 @@ setInterval(() => {
     if (fs.existsSync(BASE_UPLOADS_DIR)) {
       const dirs = fs.readdirSync(BASE_UPLOADS_DIR);
       dirs.forEach((dir) => {
+        if (dir === '.gitkeep') return;
         const fullPath = path.join(BASE_UPLOADS_DIR, dir);
-        const stats = fs.statSync(fullPath);
-        if (now - stats.mtimeMs > maxAgeMs) {
-          fs.rmSync(fullPath, { recursive: true, force: true });
-        }
+        try {
+          const stats = fs.statSync(fullPath);
+          if (now - stats.mtimeMs > maxAgeMs) {
+            fs.rmSync(fullPath, { recursive: true, force: true });
+          }
+        } catch (_) {}
       });
     }
 
     if (fs.existsSync(BASE_OUTPUTS_DIR)) {
       const files = fs.readdirSync(BASE_OUTPUTS_DIR);
       files.forEach((file) => {
+        if (file === '.gitkeep') return;
         const fullPath = path.join(BASE_OUTPUTS_DIR, file);
-        const stats = fs.statSync(fullPath);
-        if (now - stats.mtimeMs > maxAgeMs) {
-          fs.rmSync(fullPath, { force: true });
-        }
+        try {
+          const stats = fs.statSync(fullPath);
+          // If it's a temporary render_* folder older than 15 mins, clean it aggressively
+          if (file.startsWith('render_') && now - stats.mtimeMs > 15 * 60 * 1000) {
+            fs.rmSync(fullPath, { recursive: true, force: true });
+          } else if (now - stats.mtimeMs > maxAgeMs) {
+            fs.rmSync(fullPath, { recursive: true, force: true });
+          }
+        } catch (_) {}
       });
     }
   } catch (cleanErr) {
     console.warn('Garbage collection warning:', cleanErr.message);
   }
-}, 30 * 60 * 1000);
+}
+
+// Run immediately on boot, then every 15 minutes
+pruneOldFiles();
+setInterval(pruneOldFiles, 15 * 60 * 1000);
 
 function broadcastJobProgress(jobId, data) {
   const clients = sseClients.get(jobId);

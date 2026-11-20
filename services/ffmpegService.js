@@ -195,7 +195,7 @@ function renderClipSegment({
       '-preset',
       'ultrafast',
       '-crf',
-      '18',
+      '22',
       '-pix_fmt',
       'yuv420p',
       outputPath,
@@ -312,14 +312,61 @@ async function renderVideo({
   const transDur = Math.max(0.3, Math.min(1.5, Number(transitionDuration) || 0.8));
   const hasAnyTransition = clips && clips.some((c) => c.transition && c.transition !== 'none');
 
+  // Auto-clean any stale/orphaned render_* temporary folders older than 15 minutes
+  const parentOutputsDir = path.dirname(outputFilePath);
+  try {
+    if (fs.existsSync(parentOutputsDir)) {
+      const items = fs.readdirSync(parentOutputsDir);
+      const now = Date.now();
+      for (const item of items) {
+        if (item.startsWith('render_')) {
+          const itemPath = path.join(parentOutputsDir, item);
+          try {
+            const stats = fs.statSync(itemPath);
+            if (stats.isDirectory() && now - stats.mtimeMs > 15 * 60 * 1000) {
+              fs.rmSync(itemPath, { recursive: true, force: true });
+            }
+          } catch (_) {}
+        }
+      }
+    }
+  } catch (_) {}
+
+  // Check available disk space (prevent mid-render disk full crash)
+  try {
+    if (fs.statfsSync && fs.existsSync(parentOutputsDir)) {
+      const stat = fs.statfsSync(parentOutputsDir);
+      const freeMb = Math.round((stat.bavail * stat.bsize) / (1024 * 1024));
+      if (freeMb < 800) {
+        throw new Error(
+          `Insufficient disk space on output drive (${freeMb} MB free). At least 1 GB is required for rendering.`
+        );
+      }
+    }
+  } catch (fsErr) {
+    if (fsErr.message && fsErr.message.includes('Insufficient disk space')) {
+      throw fsErr;
+    }
+  }
+
   // Create isolated temporary directory for segment outputs
   const tempDir = path.join(
-    path.dirname(outputFilePath),
+    parentOutputsDir,
     `render_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
   );
   if (!fs.existsSync(tempDir)) {
     fs.mkdirSync(tempDir, { recursive: true });
   }
+
+  // Ensure tempDir is wiped if the Node process exits unexpectedly
+  const emergencyCleanup = () => {
+    try {
+      if (fs.existsSync(tempDir)) {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    } catch (_) {}
+  };
+  process.once('exit', emergencyCleanup);
 
   try {
     // ==============================================================
@@ -511,7 +558,7 @@ async function renderVideo({
           '-threads',
           '0',
           '-crf',
-          '18',
+          '22',
           '-pix_fmt',
           'yuv420p',
           chunkOut,
@@ -527,6 +574,15 @@ async function renderVideo({
           });
           p.on('error', reject);
         });
+
+        // Immediately clean up segment files consumed by this chunk to prevent disk bloat
+        for (const idx of idxs) {
+          try {
+            if (segmentPaths[idx] && fs.existsSync(segmentPaths[idx])) {
+              fs.unlinkSync(segmentPaths[idx]);
+            }
+          } catch (_) {}
+        }
 
         if (onProgress) {
           const pct = Math.min(70, 45 + Math.round(((c + 1) / chunkDefs.length) * 25));
@@ -649,6 +705,9 @@ async function renderVideo({
   } finally {
     // Always clean up the temporary directory and segment files
     try {
+      if (typeof emergencyCleanup === 'function') {
+        process.removeListener('exit', emergencyCleanup);
+      }
       if (fs.existsSync(tempDir)) {
         fs.rmSync(tempDir, { recursive: true, force: true });
       }
