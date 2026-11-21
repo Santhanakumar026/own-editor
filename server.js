@@ -404,7 +404,23 @@ app.get('/api/jobs/:jobId/download', (req, res) => {
     return res.status(404).json({ success: false, error: 'Video file not found or still rendering.' });
   }
 
-  res.download(videoPath, `synced_video_${jobId}.mp4`);
+  const stat = fs.statSync(videoPath);
+  res.setHeader('Content-Type', 'video/mp4');
+  res.setHeader('Content-Length', stat.size);
+  res.setHeader('Content-Disposition', `attachment; filename="synced_video_${jobId}.mp4"`);
+  res.setHeader('Accept-Ranges', 'bytes');
+  res.setHeader('Cache-Control', 'no-cache');
+
+  // Disable request/response timeout for large (1GB+) file transfers
+  if (req.setTimeout) req.setTimeout(0);
+  if (res.setTimeout) res.setTimeout(0);
+
+  const stream = fs.createReadStream(videoPath);
+  stream.on('error', (err) => {
+    console.error('Download stream error:', err.message);
+    if (!res.headersSent) res.status(500).send('Error streaming video file.');
+  });
+  stream.pipe(res);
 });
 
 // Serve frontend static build if available (Unified production deployment)
