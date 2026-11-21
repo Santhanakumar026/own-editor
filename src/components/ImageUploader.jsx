@@ -3,13 +3,19 @@ import { naturalSortFiles } from '../utils/filenameParser';
 
 export default function ImageUploader({
   images,
+  clips = [],
   onAddImages,
   onClearAllImages,
   onRemoveImage,
+  onTrimUnusedImages,
   audioDuration,
 }) {
   const fileInputRef = useRef(null);
   const folderInputRef = useRef(null);
+
+  const usedIndices = new Set((clips || []).map((c) => c.imageIndex));
+  const usedNames = new Set((clips || []).map((c) => c.imageName));
+  const excludedCount = images.length - (clips ? clips.length : images.length);
 
   const processFiles = (fileList) => {
     const rawFiles = Array.from(fileList || []).filter((f) =>
@@ -54,6 +60,21 @@ export default function ImageUploader({
               >
                 {totalSizeMb} MB
               </span>
+              {excludedCount > 0 && audioDuration > 0 && onTrimUnusedImages && (
+                <button
+                  className="btn btn-secondary"
+                  style={{
+                    padding: '4px 10px',
+                    fontSize: '11px',
+                    color: 'var(--accent-cyan)',
+                    borderColor: 'var(--accent-cyan)',
+                  }}
+                  onClick={onTrimUnusedImages}
+                  title="Automatically remove images that exceed audio duration"
+                >
+                  ✂️ Trim Extra ({excludedCount})
+                </button>
+              )}
               <button
                 className="btn btn-secondary"
                 style={{ padding: '4px 10px', fontSize: '11px', color: 'var(--accent-rose)' }}
@@ -124,27 +145,55 @@ export default function ImageUploader({
       {/* Image Preview Grid */}
       {images.length > 0 && (
         <div className="image-preview-grid">
-          {images.map((img, idx) => (
-            <div key={`${img.name}-${idx}`} className="image-thumb-card">
-              <span className="image-thumb-index">#{idx + 1}</span>
-              <img src={img.previewUrl} alt={img.name} loading="lazy" />
-              <div className="image-thumb-info">
-                <div className="image-thumb-name" title={img.name}>
-                  {img.name}
-                </div>
-              </div>
-              <button
-                className="btn-thumb-remove"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onRemoveImage(idx);
+          {images.map((img, idx) => {
+            const isUsed = clips.length === 0 || usedIndices.has(idx) || usedNames.has(img.name);
+            return (
+              <div
+                key={`${img.name}-${idx}`}
+                className="image-thumb-card"
+                style={{
+                  opacity: !isUsed && audioDuration > 0 ? 0.45 : 1,
+                  position: 'relative',
                 }}
-                title="Remove image"
               >
-                ✕
-              </button>
-            </div>
-          ))}
+                <span className="image-thumb-index">#{idx + 1}</span>
+                {!isUsed && audioDuration > 0 && (
+                  <span
+                    style={{
+                      position: 'absolute',
+                      top: '4px',
+                      right: '26px',
+                      background: 'rgba(239, 68, 68, 0.9)',
+                      color: '#fff',
+                      fontSize: '9px',
+                      fontWeight: '700',
+                      padding: '1px 5px',
+                      borderRadius: '4px',
+                      zIndex: 3,
+                    }}
+                  >
+                    ✂️ Exceeds Audio
+                  </span>
+                )}
+                <img src={img.previewUrl} alt={img.name} loading="lazy" />
+                <div className="image-thumb-info">
+                  <div className="image-thumb-name" title={img.name}>
+                    {img.name}
+                  </div>
+                </div>
+                <button
+                  className="btn-thumb-remove"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onRemoveImage(idx);
+                  }}
+                  title="Remove image"
+                >
+                  ✕
+                </button>
+              </div>
+            );
+          })}
         </div>
       )}
     </div>

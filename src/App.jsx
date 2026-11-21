@@ -125,6 +125,16 @@ export default function App() {
     autoSynchronize(updated, audioDuration);
   };
 
+  // Automatically purges/discards all images that exceed the audio duration
+  const handleTrimUnusedImages = () => {
+    if (!clips || clips.length === 0 || images.length === 0) return;
+    const usedNames = new Set(clips.map((c) => c.imageName));
+    const usedIndices = new Set(clips.map((c) => c.imageIndex));
+    const trimmed = images.filter((img, idx) => usedNames.has(img.name) || usedIndices.has(idx));
+    setImages(trimmed);
+    autoSynchronize(trimmed, audioDuration);
+  };
+
   // Generate Video
   const handleGenerate = async () => {
     if (images.length === 0) {
@@ -155,8 +165,14 @@ export default function App() {
     if (audioFile) {
       formData.append('audio', audioFile);
     }
-    images.forEach((imgObj) => {
-      formData.append('images', imgObj.file);
+
+    // Only upload images that are actively used in the timeline cuts
+    const usedImageNames = new Set(activeClips.map((c) => c.imageName));
+    const usedImageIndices = new Set(activeClips.map((c) => c.imageIndex));
+    images.forEach((imgObj, idx) => {
+      if (usedImageNames.has(imgObj.name) || usedImageIndices.has(idx)) {
+        formData.append('images', imgObj.file);
+      }
     });
 
     const payloadTimeline = activeClips.map((c) => ({
@@ -343,16 +359,16 @@ export default function App() {
             marginBottom: '24px',
             padding: '14px 20px',
             background:
-              autoSyncStatus.type === 'filename'
+              autoSyncStatus.type === 'filename_exact' || autoSyncStatus.type === 'filename'
                 ? 'rgba(16, 185, 129, 0.15)'
                 : 'rgba(99, 102, 241, 0.15)',
             border: `1px solid ${
-              autoSyncStatus.type === 'filename'
+              autoSyncStatus.type === 'filename_exact' || autoSyncStatus.type === 'filename'
                 ? 'rgba(16, 185, 129, 0.3)'
                 : 'rgba(99, 102, 241, 0.3)'
             }`,
             borderRadius: '12px',
-            color: autoSyncStatus.type === 'filename' ? '#34d399' : '#818cf8',
+            color: autoSyncStatus.type === 'filename_exact' || autoSyncStatus.type === 'filename' ? '#34d399' : '#818cf8',
             fontSize: '14px',
             fontWeight: '600',
             display: 'flex',
@@ -361,7 +377,24 @@ export default function App() {
             boxShadow: '0 4px 20px rgba(0, 0, 0, 0.2)',
           }}
         >
-          <span>{autoSyncStatus.message}</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <span>{autoSyncStatus.message}</span>
+            {images.length > clips.length && audioDuration > 0 && (
+              <button
+                className="btn btn-secondary"
+                style={{
+                  padding: '3px 8px',
+                  fontSize: '11px',
+                  color: 'var(--accent-cyan)',
+                  borderColor: 'var(--accent-cyan)',
+                }}
+                onClick={handleTrimUnusedImages}
+                title="Remove images that exceed audio duration"
+              >
+                ✂️ Purge {images.length - clips.length} Extra Images
+              </button>
+            )}
+          </div>
           <span style={{ fontSize: '12px', opacity: 0.8, color: '#fff' }}>
             ✓ Ready to Render
           </span>
@@ -379,9 +412,11 @@ export default function App() {
 
         <ImageUploader
           images={images}
+          clips={clips}
           onAddImages={handleAddImages}
           onClearAllImages={handleClearAllImages}
           onRemoveImage={handleRemoveImage}
+          onTrimUnusedImages={handleTrimUnusedImages}
           audioDuration={audioDuration}
         />
       </div>

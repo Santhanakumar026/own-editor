@@ -42,7 +42,17 @@ function extractTimestampFromFilename(filename) {
     }
   }
 
-  // Pattern 2: Underscored or bracketed Windows-safe MM-SS or MM:SS clock: _0-00_, _0-06_, [00-21], [00:03], _1-05_, _9-36_
+  // Pattern 2: XmYs format: 1m30s, 0m05s, 2m10s
+  const mSecMatch = name.match(/(?:^|[\[\(_\s])(\d+)\s*m\s*(\d+(?:\.\d+)?)\s*s?(?:[\]\)_s\s]|$)/i);
+  if (mSecMatch) {
+    const mins = parseFloat(mSecMatch[1]);
+    const secs = parseFloat(mSecMatch[2]);
+    if (!isNaN(mins) && !isNaN(secs)) {
+      return { type: 'point', time: Number((mins * 60 + secs).toFixed(2)) };
+    }
+  }
+
+  // Pattern 3: Underscored or bracketed Windows-safe MM-SS or MM:SS clock: _0-00_, _0-06_, [00-21], [00:03], _1-05_, _9-36_
   const bracketClockMatch = name.match(
     /(?:^|[\[\(_\s])(\d{1,2})[-:_](\d{2}(?:\.\d+)?)(?:[\]\)_s\s]|$)/i
   );
@@ -55,7 +65,7 @@ function extractTimestampFromFilename(filename) {
     }
   }
 
-  // Pattern 3: Pure seconds format: 21s, [21s], _21s, 3.5s
+  // Pattern 4: Pure seconds format: 21s, [21s], _21s, 3.5s
   const secMatch = name.match(/(?:^|[\[\(_\s])(\d+(?:\.\d+)?)\s*s(?:[\]\)_s\s]|$)/i);
   if (secMatch) {
     const sec = parseFloat(secMatch[1]);
@@ -64,7 +74,7 @@ function extractTimestampFromFilename(filename) {
     }
   }
 
-  // Pattern 4: Fallback clock anywhere in filename: "image_00:03.jpg" or "00:03_photo.png" or "00-21_scene.png"
+  // Pattern 5: Fallback clock anywhere in filename: "image_00:03.jpg" or "00:03_photo.png" or "00-21_scene.png"
   const clockMatch = name.match(/(?:^|[^\d])(\d{1,2})[-:](\d{2}(?:\.\d+)?)(?:[^\d]|$)/);
   if (clockMatch) {
     const mins = parseFloat(clockMatch[1]);
@@ -105,6 +115,10 @@ function parseAndGenerateTimeline(uploadedImages, rawTimeline, audioDuration, pr
   const warnings = [];
 
   // Build lookup maps for images:
+  // Apply natural numerical sorting so Multer multipart stream ordering never scrambles index resolution
+  uploadedImages.sort((a, b) =>
+    a.originalname.localeCompare(b.originalname, undefined, { numeric: true })
+  );
   const imageByIndex = [...uploadedImages];
   const imageByName = new Map();
 
@@ -137,107 +151,175 @@ function parseAndGenerateTimeline(uploadedImages, rawTimeline, audioDuration, pr
         return a.img.originalname.localeCompare(b.img.originalname, undefined, { numeric: true });
       });
 
-      const firstTime =
-        withTimestamps[0]?.parsed?.type === 'range'
-          ? withTimestamps[0].parsed.start
-          : withTimestamps[0].parsed.time;
-
-      if (firstTime > 0) {
-        // Timestamps represent END transitions (e.g. first image ends at 0:06)
-        let cursor = 0;
-        let i = 0;
-        while (i < withTimestamps.length) {
-          const curTime =
-            withTimestamps[i].parsed.type === 'range'
-              ? withTimestamps[i].parsed.start
-              : withTimestamps[i].parsed.time;
-          let j = i;
-          while (
-            j < withTimestamps.length &&
-            (withTimestamps[j].parsed.type === 'range'
-              ? withTimestamps[j].parsed.start
-              : withTimestamps[j].parsed.time) === curTime
-          ) {
-            j++;
-          }
-          const count = j - i;
-          const startT = cursor;
-          let endT = curTime;
-          if (j === withTimestamps.length && audioDuration > endT) {
-            endT = audioDuration;
-          }
-          const interval = Math.max(count * 0.5, endT - startT);
-          const step = interval / count;
-          for (let k = 0; k < count; k++) {
-            entries.push({
-              imageIndex: withTimestamps[i + k].idx,
-              imageName: withTimestamps[i + k].img.originalname,
-              start: Number((startT + k * step).toFixed(2)),
-              end: Number((startT + (k + 1) * step).toFixed(2)),
-            });
-          }
-          cursor = endT;
-          i = j;
-        }
-      } else {
-        // firstTime === 0 (first image starts at 0:00, timestamps represent START markers)
-        let i = 0;
-        while (i < withTimestamps.length) {
-          const curTime =
-            withTimestamps[i].parsed.type === 'range'
-              ? withTimestamps[i].parsed.start
-              : withTimestamps[i].parsed.time;
-          let j = i;
-          while (
-            j < withTimestamps.length &&
-            (withTimestamps[j].parsed.type === 'range'
-              ? withTimestamps[j].parsed.start
-              : withTimestamps[j].parsed.time) === curTime
-          ) {
-            j++;
-          }
-          const count = j - i;
-          const startT = curTime;
-          let nextT;
-          if (j < withTimestamps.length) {
-            nextT =
-              withTimestamps[j].parsed.type === 'range'
-                ? withTimestamps[j].parsed.start
-                : withTimestamps[j].parsed.time;
-          } else {
-            nextT = audioDuration > startT ? audioDuration : startT + 3.5 * count;
-          }
-          const interval = Math.max(count * 0.5, nextT - startT);
-          const step = interval / count;
-          for (let k = 0; k < count; k++) {
-            entries.push({
-              imageIndex: withTimestamps[i + k].idx,
-              imageName: withTimestamps[i + k].img.originalname,
-              start: Number((startT + k * step).toFixed(2)),
-              end: Number((startT + (k + 1) * step).toFixed(2)),
-            });
-          }
-          i = j;
+      // Check if timestamps are completely beyond audio duration
+      if (audioDuration > 0) {
+        const inRangeCount = withTimestamps.filter((s) => (s.parsed?.time || 0) < audioDuration).length;
+        if (inRangeCount === 0) {
+          // Fall back to evenly distributing across audio length
+          const totalDur = audioDuration;
+          const step = totalDur / uploadedImages.length;
+          entries = uploadedImages.map((img, idx) => ({
+            imageIndex: idx,
+            imageName: img.originalname,
+            start: Number((idx * step).toFixed(2)),
+            end:
+              idx === uploadedImages.length - 1
+                ? Number(totalDur.toFixed(2))
+                : Number(((idx + 1) * step).toFixed(2)),
+          }));
         }
       }
 
-      // Clamp / extend last entry to audioDuration if audio is longer
-      if (audioDuration > 0 && entries.length > 0) {
-        const last = entries[entries.length - 1];
-        if (last.end < audioDuration) {
-          last.end = Number(audioDuration.toFixed(2));
+      if (entries.length === 0) {
+        const firstTime =
+          withTimestamps[0]?.parsed?.type === 'range'
+            ? withTimestamps[0].parsed.start
+            : withTimestamps[0].parsed.time;
+
+        if (firstTime > 0) {
+          // Timestamps represent END transitions (e.g. first image ends at 0:06)
+          let cursor = 0;
+          let i = 0;
+          while (i < withTimestamps.length) {
+            const curTime =
+              withTimestamps[i].parsed.type === 'range'
+                ? withTimestamps[i].parsed.start
+                : withTimestamps[i].parsed.time;
+            let j = i;
+            while (
+              j < withTimestamps.length &&
+              (withTimestamps[j].parsed.type === 'range'
+                ? withTimestamps[j].parsed.start
+                : withTimestamps[j].parsed.time) === curTime
+            ) {
+              j++;
+            }
+            const count = j - i;
+            const startT = cursor;
+            let endT = curTime;
+
+            if (audioDuration > 0 && startT >= audioDuration - 0.05) {
+              break; // Stop: image starts past audio duration
+            }
+
+            if (j === withTimestamps.length && audioDuration > endT) {
+              endT = audioDuration;
+            }
+
+            if (audioDuration > 0 && endT > audioDuration) {
+              endT = audioDuration;
+            }
+
+            const interval = Math.max(count * 0.3, endT - startT);
+            const step = interval / count;
+            for (let k = 0; k < count; k++) {
+              const clipStart = Number((startT + k * step).toFixed(2));
+              let clipEnd = Number((startT + (k + 1) * step).toFixed(2));
+              if (audioDuration > 0 && clipEnd > audioDuration) {
+                clipEnd = Number(audioDuration.toFixed(2));
+              }
+              if (audioDuration > 0 && clipStart >= audioDuration - 0.05) {
+                break;
+              }
+              entries.push({
+                imageIndex: withTimestamps[i + k].idx,
+                imageName: withTimestamps[i + k].img.originalname,
+                start: clipStart,
+                end: clipEnd,
+              });
+            }
+            cursor = endT;
+            if (audioDuration > 0 && cursor >= audioDuration - 0.05) {
+              break;
+            }
+            i = j;
+          }
+        } else {
+          // firstTime === 0 (first image starts at 0:00, timestamps represent START markers)
+          let i = 0;
+          while (i < withTimestamps.length) {
+            const curTime =
+              withTimestamps[i].parsed.type === 'range'
+                ? withTimestamps[i].parsed.start
+                : withTimestamps[i].parsed.time;
+            let j = i;
+            while (
+              j < withTimestamps.length &&
+              (withTimestamps[j].parsed.type === 'range'
+                ? withTimestamps[j].parsed.start
+                : withTimestamps[j].parsed.time) === curTime
+            ) {
+              j++;
+            }
+            const count = j - i;
+            const startT = curTime;
+
+            if (audioDuration > 0 && startT >= audioDuration - 0.05) {
+              break; // Stop: image starts past audio duration
+            }
+
+            let nextT;
+            if (j < withTimestamps.length) {
+              nextT =
+                withTimestamps[j].parsed.type === 'range'
+                  ? withTimestamps[j].parsed.start
+                  : withTimestamps[j].parsed.time;
+            } else {
+              nextT = audioDuration > startT ? audioDuration : startT + 3.5 * count;
+            }
+
+            if (audioDuration > 0 && nextT > audioDuration) {
+              nextT = audioDuration;
+            }
+
+            const interval = Math.max(count * 0.3, nextT - startT);
+            const step = interval / count;
+            for (let k = 0; k < count; k++) {
+              const clipStart = Number((startT + k * step).toFixed(2));
+              let clipEnd = Number((startT + (k + 1) * step).toFixed(2));
+              if (audioDuration > 0 && clipEnd > audioDuration) {
+                clipEnd = Number(audioDuration.toFixed(2));
+              }
+              if (audioDuration > 0 && clipStart >= audioDuration - 0.05) {
+                break;
+              }
+              entries.push({
+                imageIndex: withTimestamps[i + k].idx,
+                imageName: withTimestamps[i + k].img.originalname,
+                start: clipStart,
+                end: clipEnd,
+              });
+            }
+            i = j;
+            if (audioDuration > 0 && nextT >= audioDuration - 0.05) {
+              break;
+            }
+          }
+        }
+
+        // Clamp / extend last entry to audioDuration if audio is longer
+        if (audioDuration > 0 && entries.length > 0) {
+          const last = entries[entries.length - 1];
+          if (last.end < audioDuration) {
+            last.end = Number(audioDuration.toFixed(2));
+          }
         }
       }
     } else {
       // Divide evenly across audio length
       const totalDur = audioDuration > 0 ? audioDuration : uploadedImages.length * 3.5;
-      const step = totalDur / uploadedImages.length;
-      entries = uploadedImages.map((img, idx) => ({
+      const count = uploadedImages.length;
+      let usableCount = count;
+      if (audioDuration > 0 && audioDuration / count < 1.0) {
+        usableCount = Math.max(1, Math.floor(audioDuration / 1.0));
+      }
+      const step = totalDur / usableCount;
+      entries = uploadedImages.slice(0, usableCount).map((img, idx) => ({
         imageIndex: idx,
         imageName: img.originalname,
         start: Number((idx * step).toFixed(2)),
         end:
-          idx === uploadedImages.length - 1
+          idx === usableCount - 1
             ? Number(totalDur.toFixed(2))
             : Number(((idx + 1) * step).toFixed(2)),
       }));
@@ -404,11 +486,31 @@ function parseAndGenerateTimeline(uploadedImages, rawTimeline, audioDuration, pr
     currentTime = Number((currentTime + clip.duration).toFixed(3));
   }
 
-  // Check audio duration alignment
+  // Check audio duration alignment and strictly trim any extra clips beyond audio
   const safeAudioDuration = typeof audioDuration === 'number' && audioDuration > 0 ? audioDuration : currentTime;
   const audioRounded = Number(safeAudioDuration.toFixed(3));
 
-  if (currentTime < audioRounded - 0.05) {
+  if (safeAudioDuration > 0) {
+    const fittingClips = [];
+    for (const clip of normalizedClips) {
+      if (clip.start >= safeAudioDuration - 0.05) {
+        warnings.push(
+          `Clip ${clip.imageName} starts at ${clip.start}s (exceeds audio length ${safeAudioDuration}s). Automatically trimmed and removed.`
+        );
+        continue;
+      }
+      if (clip.end > safeAudioDuration) {
+        clip.end = safeAudioDuration;
+        clip.duration = Number((clip.end - clip.start).toFixed(3));
+      }
+      fittingClips.push(clip);
+    }
+    normalizedClips.length = 0;
+    normalizedClips.push(...fittingClips);
+    currentTime = normalizedClips.length > 0 ? normalizedClips[normalizedClips.length - 1].end : 0;
+  }
+
+  if (currentTime < audioRounded - 0.05 && normalizedClips.length > 0) {
     const remainingTime = Number((audioRounded - currentTime).toFixed(3));
     const lastClip = normalizedClips[normalizedClips.length - 1];
     warnings.push(

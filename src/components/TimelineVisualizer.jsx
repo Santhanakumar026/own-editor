@@ -16,10 +16,7 @@ export default function TimelineVisualizer({ clips, audioDuration, images }) {
     return null;
   }
 
-  const maxTimelineTime = Math.max(
-    audioDuration > 0 ? audioDuration : 0,
-    clips[clips.length - 1]?.end || 1
-  );
+  const maxTimelineTime = audioDuration > 0 ? audioDuration : (clips[clips.length - 1]?.end || 1);
 
   return (
     <div className="timeline-bar-container" style={{ marginTop: '20px' }}>
@@ -27,11 +24,11 @@ export default function TimelineVisualizer({ clips, audioDuration, images }) {
         <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <span>📊 Timeline Synchronization Map</span>
           <span style={{ fontSize: '11px', color: 'var(--accent-cyan)' }}>
-            (Duration: {maxTimelineTime.toFixed(1)}s)
+            (Audio Duration: {maxTimelineTime.toFixed(1)}s)
           </span>
         </span>
         <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
-          {clips.length} cuts scheduled
+          {clips.length} cuts locked to voiceover
         </span>
       </div>
 
