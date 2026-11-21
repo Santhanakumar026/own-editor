@@ -118,10 +118,10 @@ export function buildTimelineFromImages(images, audioDuration) {
   // If at least 35% of images have timestamps, use timestamp-based timeline
   if (withTimestamps.length >= Math.max(1, Math.ceil(images.length * 0.35))) {
     // Check if explicit ranges are used
-    const hasRanges = parsedItems.some((item) => item.parsed?.type === 'range');
+    const hasRanges = withTimestamps.some((item) => item.parsed?.type === 'range');
 
     if (hasRanges) {
-      const sortedByStart = [...parsedItems].sort((a, b) => {
+      const sortedByStart = [...withTimestamps].sort((a, b) => {
         const sa = a.parsed?.start ?? 0;
         const sb = b.parsed?.start ?? 0;
         return sa - sb;
@@ -154,12 +154,12 @@ export function buildTimelineFromImages(images, audioDuration) {
       };
     }
 
-    // Sort items chronologically by timestamp, then naturally by original index
-    const sorted = [...parsedItems].sort((a, b) => {
-      const ta = a.parsed ? a.parsed.time : 0;
-      const tb = b.parsed ? b.parsed.time : 0;
+    // Sort items chronologically by timestamp, then naturally by original filename
+    const sorted = [...withTimestamps].sort((a, b) => {
+      const ta = a.parsed ? (a.parsed.type === 'range' ? a.parsed.start : a.parsed.time) : 0;
+      const tb = b.parsed ? (b.parsed.type === 'range' ? b.parsed.start : b.parsed.time) : 0;
       if (ta !== tb) return ta - tb;
-      return a.originalIndex - b.originalIndex;
+      return a.name.localeCompare(b.name, undefined, { numeric: true });
     });
 
     const firstTime = sorted[0].parsed ? sorted[0].parsed.time : 0;

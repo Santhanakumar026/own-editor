@@ -149,12 +149,28 @@ const CAPCUT_TRANSITIONS = [
 ];
 
 /**
+ * Helper to get the exact safe transition duration between two adjacent clips.
+ * Clamps transition duration to at most 45% of either clip's duration,
+ * preventing transitions from swallowing short clips or causing offset collisions in FFmpeg xfade.
+ */
+function getTransitionDuration(transitionType, durA, durB, baseTransDur) {
+  if (!transitionType || transitionType === 'none') return 0.034;
+  const maxAllowed = Math.min(
+    baseTransDur,
+    (durA != null ? durA : baseTransDur) * 0.45,
+    (durB != null ? durB : baseTransDur) * 0.45
+  );
+  return Math.max(0.15, Number(maxAllowed.toFixed(3)));
+}
+
+/**
  * Helper to render an individual image into an ultrafast standardized video clip segment.
  * If user provided a brand logo, the logo is directly attached to the image at the watermark spot.
  * When no logo is provided, zero logo overlay is added.
  */
 function renderClipSegment({
   imagePath,
+  duration,
   logoPath = null,
   logoPosition = 'bottom-right',
   logoWidth = 180,
@@ -186,6 +202,7 @@ function renderClipSegment({
       '-threads',
       '2',
       ...inputs,
+      ...(duration ? ['-t', String(duration)] : []),
       '-filter_complex',
       fullFilter,
       '-map',
@@ -381,7 +398,9 @@ async function renderVideo({
       segmentPaths[i] = segPath;
 
       const prevTrans = i > 0 && hasAnyTransition ? (clips[i - 1].transition || 'none') : 'none';
-      const headExt = i > 0 && hasAnyTransition ? (prevTrans === 'none' ? 0.034 : transDur) : 0;
+      const headExt = i > 0 && hasAnyTransition
+        ? getTransitionDuration(prevTrans, clips[i - 1].duration, clip.duration, transDur)
+        : 0;
       const effectiveDur = Number((clip.duration + headExt).toFixed(3));
       const totalFrames = Math.max(15, Math.round(effectiveDur * 30));
 
@@ -403,9 +422,9 @@ async function renderVideo({
         motionFilter = `scale=${bufferW}:${bufferH}:force_original_aspect_ratio=increase:flags=bicubic,zoompan=z=1.14:d=${totalFrames}:x='(iw-iw/zoom)*(${easeExpr})':y='(ih-ih/zoom)/2':s=${width}x${height}:fps=30`;
       } else {
         if (backgroundMode === 'blur') {
-          motionFilter = `split=2[main][bg];[bg]scale=160:90:force_original_aspect_ratio=increase,scale=${width}:${height}:flags=bilinear,crop=${width}:${height}[bl];[main]scale=${width}:${height}:force_original_aspect_ratio=decrease[fg];[bl][fg]overlay=(${width}-w)/2:(${height}-h)/2,setsar=1,fps=30`;
+          motionFilter = `loop=loop=${totalFrames}:size=1:start=0,split=2[main][bg];[bg]scale=160:90:force_original_aspect_ratio=increase,scale=${width}:${height}:flags=bilinear,crop=${width}:${height}[bl];[main]scale=${width}:${height}:force_original_aspect_ratio=decrease[fg];[bl][fg]overlay=(${width}-w)/2:(${height}-h)/2,setsar=1,fps=30`;
         } else {
-          motionFilter = `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=30`;
+          motionFilter = `loop=loop=${totalFrames}:size=1:start=0,scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=30`;
         }
       }
 
@@ -421,6 +440,7 @@ async function renderVideo({
 
       clipTasks.push({
         imagePath: clip.filePath,
+        duration: effectiveDur,
         logoPath: logoFilePath,
         logoPosition,
         logoWidth,
@@ -453,8 +473,15 @@ async function renderVideo({
     if (!hasAnyTransition) {
       // SUB-CASE 2A: INSTANT CONCAT DEMUXER (ZERO RE-ENCODING DELAY)
       const concatListPath = path.join(tempDir, 'concat_list.txt');
-      const lines = segmentPaths.map((sp) => `file '${sp.replace(/\\/g, '/')}'`).join('\n');
-      fs.writeFileSync(concatListPath, lines, 'utf8');
+      const lines = [];
+      for (let i = 0; i < segmentPaths.length; i++) {
+        lines.push(`file '${path.basename(segmentPaths[i])}'`);
+        lines.push(`duration ${clips[i].duration.toFixed(3)}`);
+      }
+      if (segmentPaths.length > 0) {
+        lines.push(`file '${path.basename(segmentPaths[segmentPaths.length - 1])}'`);
+      }
+      fs.writeFileSync(concatListPath, lines.join('\n'), 'utf8');
 
       const inputs = ['-f', 'concat', '-safe', '0', '-i', concatListPath];
       let inputCount = 1;
@@ -522,7 +549,9 @@ async function renderVideo({
         chunkFiles.push(chunkOut);
 
         const prevTrans = c > 0 ? (clips[idxs[0] - 1].transition || 'none') : 'none';
-        const hc = c > 0 ? (prevTrans === 'none' ? 0.034 : transDur) : 0;
+        const hc = c > 0
+          ? getTransitionDuration(prevTrans, clips[idxs[0] - 1].duration, clips[idxs[0]].duration, transDur)
+          : 0;
 
         const internalStarts = [hc];
         for (let j = 0; j < idxs.length - 1; j++) {
@@ -540,7 +569,7 @@ async function renderVideo({
           const next = `${j + 1}:v`;
           const out = j === idxs.length - 2 ? 'chk_out' : `xf${j}`;
           const t = clips[idxs[j]].transition || 'none';
-          const dj = t === 'none' ? 0.034 : transDur;
+          const dj = getTransitionDuration(t, clips[idxs[j]].duration, clips[idxs[j + 1]].duration, transDur);
           const filterType = (t === 'none' || !CAPCUT_TRANSITIONS.includes(t)) ? 'fade' : t;
           const off = Math.max(0.01, Number((internalStarts[j + 1] - dj).toFixed(3)));
           filterParts.push(`[${last}][${next}]xfade=transition=${filterType}:duration=${dj}:offset=${off}[${out}]`);
@@ -639,8 +668,9 @@ async function renderVideo({
         const next = `${c + 1}:v`;
         const out = c === chunkDefs.length - 2 ? 'final_v' : `l2_xf${c}`;
         const lastClipIdx = chunkDefs[c][chunkDefs[c].length - 1];
+        const nextFirstClipIdx = chunkDefs[c + 1][0];
         const t = clips[lastClipIdx].transition || 'none';
-        const dc = t === 'none' ? 0.034 : transDur;
+        const dc = getTransitionDuration(t, clips[lastClipIdx].duration, clips[nextFirstClipIdx].duration, transDur);
         const filterType = (t === 'none' || !CAPCUT_TRANSITIONS.includes(t)) ? 'fade' : t;
         const off = Math.max(0.01, Number((masterChunkStarts[c + 1] - dc).toFixed(3)));
         l2FilterParts.push(`[${lastStream}][${next}]xfade=transition=${filterType}:duration=${dc}:offset=${off}[${out}]`);
